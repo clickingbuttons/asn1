@@ -56,7 +56,7 @@ pub fn string(self: *Encoder, s: asn1.String) !void {
 
 pub fn oid(self: *Encoder, encoded: []const u8) !void {
     try self.buf.prependSlice(encoded);
-    try self.element(.{ .tag = .object_identifier }, encoded.len);
+    try self.element(Identifier{ .tag = .oid }, encoded.len);
 }
 
 pub fn comptimeOid(self: *Encoder, comptime dot_notation: []const u8) !void {
@@ -82,9 +82,12 @@ pub fn dateTime(self: *Encoder, date_time: asn1.DateTime, format: DateTimeFormat
     var buf: ["yyyy-mm-ddTHH:mm:ssZ".len]u8 = undefined;
     const date = date_time.date;
     const time = date_time.time;
-    const args = .{ date.year, date.month.numeric(), date.day, time.hour, time.minute, time.second };
+    var args = .{ date.year, date.month.numeric(), date.day, time.hour, time.minute, time.second };
     const bytes = switch (format) {
-        .utc => std.fmt.bufPrint(&buf, "{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}Z", args),
+        .utc => brk: {
+            args[0] -= if (args[0] >= 2000) 2000 else 1900; // RFC 5280 rules
+            break :brk std.fmt.bufPrint(&buf, "{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}Z", args);
+        },
         .generalized => std.fmt.bufPrint(&buf, "{d:0>4}{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}Z", args),
         .date_time => std.fmt.bufPrint(&buf, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", args),
     } catch unreachable;
@@ -94,7 +97,7 @@ pub fn dateTime(self: *Encoder, date_time: asn1.DateTime, format: DateTimeFormat
         .generalized => .generalized_time,
         .date_time => .date_time,
     };
-    try self.element(tag, bytes.len);
+    try self.element(Identifier{ .tag = tag }, bytes.len);
 }
 
 pub fn element(self: *Encoder, identifier: Identifier, len: usize) !void {
@@ -113,7 +116,27 @@ pub fn element(self: *Encoder, identifier: Identifier, len: usize) !void {
         }
         return error.InvalidLength;
     }
-    try writer.writeByte(@bitCast(identifier));
+
+    var encoded_id = Identifier.EncodedId{
+        .tag = undefined,
+        .constructed = identifier.constructed,
+        .class = identifier.class,
+    };
+    switch (@intFromEnum(identifier.tag)) {
+        0...30 => {
+            encoded_id.tag = @intCast(@intFromEnum(identifier.tag));
+            try writer.writeByte(@bitCast(encoded_id));
+        },
+        else => {
+            encoded_id.tag = 15;
+            try writer.writeByte(@bitCast(encoded_id));
+            const tag = Identifier.EncodedTag{
+                .tag = @intCast(@intFromEnum(identifier.tag)),
+                .continues = false,
+            };
+            try writer.writeByte(@bitCast(tag));
+        },
+    }
 }
 
 pub fn toOwnedSlice(self: *Encoder) ![]u8 {
@@ -127,6 +150,21 @@ fn hexToBytes(comptime hex: []const u8) [hex.len / 2]u8 {
 }
 
 test Encoder {
+    const allocator = std.testing.allocator;
+    var  e = Encoder.init(allocator);
+    defer e.deinit();
+
+    {
+        try e.startLength();
+        try e.dateTime(asn1.DateTime.init(1960, .jan, 1, 0, 0, 0), .utc);
+        try e.dateTime(asn1.DateTime.init(1960, .jan, 1, 0, 0, 0), .generalized);
+        try e.sequence();
+    }
+
+    try std.testing.expectEqualSlices(u8, @embedFile("./testdata/id_ecc.pub.der"), e.buf.data);
+}
+
+test "Encoder int strings" {
     const allocator = std.testing.allocator;
     var  e = Encoder.init(allocator);
     defer e.deinit();
@@ -183,20 +221,24 @@ test "Encoder id_ecc.pub" {
     try std.testing.expectEqualSlices(u8, @embedFile("./testdata/id_ecc.pub.der"), e.buf.data);
 }
 
-test dateTime {
+test "what i want" {
     const allocator = std.testing.allocator;
     var  e = Encoder.init(allocator);
     defer e.deinit();
 
     {
-        try e.startLength();
-        try e.dateTime(asn1.DateTime.init(1970, .jan, 1, 0, 0, 0), .utc);
-        try e.dateTime(asn1.DateTime.init(1970, .jan, 1, 0, 0, 0), .generalized);
-        try e.dateTime(asn1.DateTime.init(1970, .jan, 1, 0, 0, 0), .date_time);
         try e.sequence();
+        defer e.end();
+        {
+            try e.sequence();
+            defer e.end();
+            try e.comptimeOid("1.2.840.10045.2.1");
+            try e.comptimeOid("1.2.840.10045.3.1.7");
+        }
+        try e.bitstring(.{
+            .bytes = &hexToBytes("04a01532a3c0900053de60fbefefcca58793301598d308b41e6f4e364e388c2711bef432c599148c94143d4ff46c2cb73e3e6a41d7eef23c047ea11e60667de425"),
+        });
     }
-
-    try std.testing.expectEqualSlices(u8, @embedFile("./testdata/id_ecc.pub.der"), e.buf.data);
 }
 
 const std = @import("std");

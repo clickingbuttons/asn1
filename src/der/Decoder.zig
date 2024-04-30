@@ -80,7 +80,7 @@ pub fn expectDateTimeRfc5280(self: *Decoder) Error!asn1.DateTime {
 }
 
 pub fn expectOid(self: *Decoder) Error![]const u8 {
-    const ele = try self.expect(.object_identifier, false, .universal);
+    const ele = try self.expect(.oid, false, .universal);
     return self.view(ele);
 }
 
@@ -233,8 +233,21 @@ pub const Element = struct {
         var reader = stream.reader();
 
         const first = try reader.readByte();
-        const identifier: Identifier = if (first & 0x1f == 0x1f) {
-        } else {
+        const encoded_id: Identifier.EncodedId = @bitCast(first);
+
+        const tag: Identifier.Tag = switch (first) {
+            0...30 => @enumFromInt(encoded_id.tag),
+            31...127 => brk: {
+                const second = try reader.readByte();
+                const tag: Identifier.EncodedTag = @bitCast(second);
+                if (tag.continues) return error.InvalidLength;
+                break :brk @enumFromInt(tag.tag);
+            },
+            else => {
+                // No tags currently over 127.
+                // Allows `EncodedId` to nicely fit in 32 bits.
+                return error.InvalidLength;
+            },
         };
         const size_or_len_size = try reader.readByte();
 
@@ -256,7 +269,10 @@ pub const Element = struct {
             if (end > bytes.len) return error.InvalidLength;
         }
 
-        return .{ .identifier = identifier, .slice = .{ .start = start, .end = end } };
+        return .{
+            .identifier = .{ .tag = tag, .constructed = encoded_id.constructed, .class = encoded_id.class,  },
+            .slice = .{ .start = start, .end = end },
+        };
     }
 };
 
@@ -273,8 +289,6 @@ test Element {
         .slice = .{ .start = 3, .end = long_form.len },
     }, Element.decode(&long_form, 0));
 }
-
-
 
 fn parseDigits(
     text: *const [2]u8,

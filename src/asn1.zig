@@ -10,7 +10,7 @@ pub const Identifier = struct {
     constructed: bool = false,
     class: Class = .universal,
 
-    pub const Class = enum {
+    pub const Class = enum(u2) {
         universal,
         application,
         context_specific,
@@ -19,7 +19,7 @@ pub const Identifier = struct {
 
     // Universal tags
     // https://learn.microsoft.com/en-us/dotnet/api/system.formats.asn1.universaltagnumber?view=net-8.0
-    pub const Tag = enum(u8) {
+    pub const Tag = enum(u6) {
         boolean = 1,
         integer = 2,
         bitstring = 3,
@@ -58,6 +58,17 @@ pub const Identifier = struct {
         oid_iri = 35,
         oid_iri_relative = 36,
         _,
+    };
+
+    // How they come on the wire.
+    pub const EncodedId = packed struct(u8) {
+        tag: u5,
+        constructed: bool,
+        class: Identifier.Class,
+    };
+    pub const EncodedTag = packed struct(u8) {
+        tag: u7,
+        continues: bool,
     };
 };
 
