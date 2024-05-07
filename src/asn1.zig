@@ -1,89 +1,49 @@
+//! ASN.1 types for public consumption.
 const std = @import("std");
+pub const encodings = @import("./encodings.zig");
 pub const der = @import("./der.zig");
-pub const oid = @import("./oid.zig");
-
-pub const Index = u32;
-
-// https://www.oss.com/asn1/resources/asn1-made-simple/asn1-quick-reference/asn1-tags.html
-pub const Identifier = struct {
-    tag: Tag,
-    constructed: bool = false,
-    class: Class = .universal,
-
-    pub const Class = enum(u2) {
-        universal,
-        application,
-        context_specific,
-        private,
-    };
-
-    // Universal tags
-    // https://learn.microsoft.com/en-us/dotnet/api/system.formats.asn1.universaltagnumber?view=net-8.0
-    pub const Tag = enum(u6) {
-        boolean = 1,
-        integer = 2,
-        bitstring = 3,
-        octetstring = 4,
-        null = 5,
-        oid = 6,
-        object_descriptor = 7,
-        real = 9,
-        enumerated = 10,
-        embedded = 11,
-        string_utf8 = 12,
-        oid_relative = 13,
-        time = 14,
-        // 15 is reserved to mean that the tag is >= 32
-        sequence = 16,
-        /// Elements may appear in any order.
-        sequence_of = 17,
-        string_numeric = 18,
-        string_printable = 19,
-        string_teletex = 20,
-        string_videotex = 21,
-        string_ia5 = 22,
-        utc_time = 23,
-        generalized_time = 24,
-        string_graphic = 25,
-        string_visible = 26,
-        string_general = 27,
-        string_universal = 28,
-        string_char = 29,
-        string_bmp = 30,
-        date = 31,
-        time_of_day = 32,
-        date_time = 33,
-        duration = 34,
-        /// IRI = Internationalized Resource Identifier
-        oid_iri = 35,
-        oid_iri_relative = 36,
-        _,
-    };
-
-    // How they come on the wire.
-    pub const EncodedId = packed struct(u8) {
-        tag: u5,
-        constructed: bool,
-        class: Identifier.Class,
-    };
-    pub const EncodedTag = packed struct(u8) {
-        tag: u7,
-        continues: bool,
-    };
-};
+pub const Oid = @import("./Oid.zig");
 
 pub const BitString = struct {
-    bytes: []const u8,
     /// Number of bits in rightmost byte that are unused.
     right_padding: u3 = 0,
+    bytes: []const u8,
 
     pub fn bitLen(self: BitString) usize {
-        return self.bytes.len * 8 + self.right_padding;
+        return self.bytes.len * 8 - self.right_padding;
+    }
+
+    const asn1_tag = encodings.Tag{ .number = .bitstring };
+
+    pub fn decodeDer(decoder: *der.Decoder) !BitString {
+        const ele = try decoder.element(asn1_tag.toExpected());
+        const bytes = decoder.view(ele);
+
+        return try fromDer(bytes);
+    }
+
+    pub fn fromDer(bytes: []const u8) !BitString {
+        if (bytes.len < 1) return error.InvalidBitString;
+        const padding = bytes[0];
+        if (padding >= 8) return error.InvalidBitString;
+        const right_padding: u3 = @intCast(padding);
+
+        // DER requires that unused bits be zero
+        const last_byte_trunc = bytes[bytes.len - 1] >> right_padding << right_padding;
+        if (bytes[bytes.len - 1] != last_byte_trunc) return error.InvalidBitString;
+
+        return BitString{ .bytes = bytes[1..], .right_padding = right_padding };
+    }
+
+    pub fn encodeDer(self: BitString, writer: anytype) !void {
+        try der.Encoder.tagLength(writer, asn1_tag, self.bytes.len + 1);
+        try writer.writeByte(self.right_padding);
+        try writer.writeAll(self.bytes);
     }
 };
 
 pub const String = struct {
-    tag: Tag,
+    tag: String.Tag,
     data: []const u8,
 
     pub const Tag = enum {
@@ -110,90 +70,69 @@ pub const String = struct {
         any,
         /// any standarized character set, no control characters
         graphic,
+        /// alternative to oids
         object_descriptor,
     };
-};
 
-/// Lowest common denominator of UTCTime, GeneralizedTime, DATE, and DATE-TIME.
-pub const Date = struct {
-    year: Year,
-    month: Month,
-    day: Day,
-
-    pub const Year = u16;
-    pub const Month = std.time.epoch.Month;
-    pub const Day = std.math.IntFittingRange(1, 31);
-
-    pub fn init(year: Year, month: Month, day: Day) Date {
-        return .{ .year = year, .month = month, .day = day };
+    pub fn decodeDer(decoder: *der.Decoder) !String {
+        const last_index = decoder.index;
+        const ele = decoder.element(encodings.ExpectedTag.init(null, false, .universal)) catch |err| {
+            decoder.index = last_index;
+            return err;
+        };
+        switch (ele.tag.number) {
+            inline .string_utf8,
+            .string_numeric,
+            .string_printable,
+            .string_teletex,
+            .string_videotex,
+            .string_ia5,
+            .string_visible,
+            .string_universal,
+            .string_bmp,
+            .string_char,
+            .string_graphic,
+            .string_general,
+            .object_descriptor,
+            => |t| {
+                const tagname = @tagName(t)["string_".len..];
+                const tag = std.meta.stringToEnum(String.Tag, tagname) orelse unreachable;
+                return String{ .tag = tag, .data = decoder.view(ele) };
+            },
+            else => return error.InvalidString,
+        }
     }
 
-    pub fn toUnixEpochSeconds(date: Date) i64 {
-        // Euclidean Affine Transform by Cassio and Neri.
-        // Shift and correction constants for 1970-01-01.
-        const s = 82;
-        const K = 719468 + 146097 * s;
-        const L = 400 * s;
-
-        const Y_G: u32 = date.year;
-        const M_G: u32 = date.month.numeric();
-        const D_G: u32 = date.day;
-        // Map to computational calendar.
-        const J: u32 = if (M_G <= 2) 1 else 0;
-        const Y: u32 = Y_G + L - J;
-        const M: u32 = if (J != 0) M_G + 12 else M_G;
-        const D: u32 = D_G - 1;
-        const C: u32 = Y / 100;
-
-        // Rata die.
-        const y_star: u32 = 1461 * Y / 4 - C + C / 4;
-        const m_star: u32 = (979 * M - 2919) / 32;
-        const N: u32 = y_star + m_star + D;
-        const days: i32 = @intCast(N - K);
-
-        return @as(i64, days) * std.time.epoch.secs_per_day;
+    pub fn encodeDer(self: String, writer: anytype) !void {
+        const number: encodings.Tag.Number = switch (self.tag) {
+            inline else => |t| std.meta.stringToEnum(encodings.Tag.Number, "string_" ++ @tagName(t)).?,
+        };
+        try der.Encoder.tagLength(writer, .{ .number = number }, self.data.len);
+        try writer.writeAll(self.data);
     }
 };
 
-/// Lowest common denominator of  UTCTime, GeneralizedTime, TIME-OF-DAY, and DATE-TIME.
-pub const Time = struct {
-    hour: Hour,
-    minute: Minute,
-    second: Second,
+/// An opaque type to hold the bytes of a tag.
+pub fn Opaque(comptime tag: encodings.Tag) type {
+    return struct {
+        bytes: []const u8,
 
-    const Hour = std.math.IntFittingRange(0, 23);
-    const Minute = std.math.IntFittingRange(0, 59);
-    const Second = std.math.IntFittingRange(0, 60);
+        pub fn decodeDer(decoder: *der.Decoder) !@This() {
+            const ele = try decoder.element(tag.toExpected());
+            if (tag.constructed) decoder.index = ele.slice.end;
+            return .{ .bytes = decoder.view(ele) };
+        }
 
-    pub const DaySeconds = std.math.IntFittingRange(0, std.time.epoch.secs_per_day + 1);
-
-    pub fn init(hour: Hour, minute: Minute, second: Second) Time {
-        return .{ .hour = hour, .minute = minute, .second = second };
-    }
-
-    pub fn toDaySeconds(t: Time) DaySeconds {
-        var sec: DaySeconds = 0;
-        sec += @as(DaySeconds, t.hour) * 60 * 60;
-        sec += @as(DaySeconds, t.minute) * 60;
-        sec += t.second;
-        return sec;
-    }
-};
-
-pub const DateTime = struct {
-    date: Date,
-    time: Time,
-
-    pub fn init(year: Date.Year, month: Date.Month, day: Date.Day, hour: Time.Hour, minute: Time.Minute, second: Time.Second,) DateTime {
-        return .{ .date = Date.init(year, month, day), .time = Time.init(hour, minute, second) };
-    }
-
-    pub fn toUnixEpochSeconds(self: DateTime) i64 {
-        return self.date.toUnixEpochSeconds() + self.time.toDaySeconds();
-    }
-};
+        pub fn encodeDer(self: @This(), writer: anytype) !void {
+            try der.Encoder.tagLength(writer, tag, self.bytes.len);
+            try writer.writeAll(self.bytes);
+        }
+    };
+}
 
 test {
     _ = der;
-    _ = oid;
+    _ = Oid;
+    _ = encodings;
+    _ = @import("./test.zig");
 }
