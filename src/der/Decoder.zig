@@ -67,7 +67,7 @@ pub fn expect(self: *Decoder, comptime T: type) !T {
             const ele = try self.element(tag);
             const bytes = self.view(ele);
             if (@hasDecl(T, "oids")) {
-                return T.oids.get(bytes) orelse return error.UnknownOid;
+                return T.oids.oidToEnum(bytes) orelse return error.UnknownOid;
             }
             return @enumFromInt(try int(e.tag_type, bytes));
         },
@@ -78,7 +78,7 @@ pub fn expect(self: *Decoder, comptime T: type) !T {
 
 pub fn expectEnum(self: *Decoder, comptime T: type) !T {
     const oid = try self.expect(asn1.Oid);
-    return T.oids.get(oid.encoded) orelse return error.UnknownOid;
+    return T.oids.oidToEnum(oid.encoded) orelse return error.UnknownOid;
 }
 
 pub fn view(self: Decoder, elem: Element) []const u8 {

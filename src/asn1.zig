@@ -40,6 +40,16 @@ pub const BitString = struct {
         try encoder.writer().writeByte(self.right_padding);
         try encoder.writer().writeAll(self.bytes);
     }
+
+    /// Buffer must be most significant byte to least significant.
+    pub fn init(buffer: []const u8) BitString {
+        // Ignore leading zeros
+        const start = std.mem.indexOfNone(u8, buffer, &[_]u8{0}) orelse buffer.len;
+        return BitString{
+            .bytes = buffer[start..],
+            .right_padding = if (start == buffer.len) 0 else @intCast(@ctz(buffer[buffer.len - 1])),
+        };
+    }
 };
 
 /// An opaque type to hold the bytes of a tag.

@@ -141,14 +141,31 @@ test encodeComptime {
 }
 
 pub fn StaticMap(comptime Enum: type) type {
+    const enum_info = @typeInfo(Enum).Enum;
+    const EnumToOid = [enum_info.fields.len][]const u8;
+    const ReturnType = struct {
+        oid_to_enum: std.StaticStringMap(Enum),
+        enum_to_oid: EnumToOid,
+
+        pub fn oidToEnum(self: @This(), encoded: []const u8) ?Enum {
+            return self.oid_to_enum.get(encoded);
+        }
+
+        pub fn enumToOid(self: @This(), value: Enum) Oid {
+            const bytes = self.enum_to_oid[@intFromEnum(value)];
+            return .{ .encoded = bytes };
+        }
+    };
+
     return struct {
-        pub fn initComptime(comptime key_pairs: anytype) std.StaticStringMap(Enum) {
-            const enum_info = @typeInfo(Enum).Enum;
+        pub fn initComptime(comptime key_pairs: anytype) ReturnType {
             const struct_info = @typeInfo(@TypeOf(key_pairs)).Struct;
             const error_msg = "Each field of '" ++ @typeName(Enum) ++ "' must map to exactly one OID";
             if (!enum_info.is_exhaustive or enum_info.fields.len != struct_info.fields.len) {
                 @compileError(error_msg);
             }
+
+            comptime var enum_to_oid: EnumToOid = undefined;
 
             const KeyPair = struct { []const u8, Enum };
             comptime var static_key_pairs: [enum_info.fields.len]KeyPair = undefined;
@@ -160,11 +177,14 @@ pub fn StaticMap(comptime Enum: type) type {
                 const encoded = &encodeComptime(@field(key_pairs, f.name));
                 const tag: Enum = @enumFromInt(f.value);
                 static_key_pairs[i] = .{ encoded, tag };
+                std.debug.assert(f.value == i);
+                enum_to_oid[@as(usize, f.value)] = encoded;
             };
 
-            const res = std.StaticStringMap(Enum).initComptime(static_key_pairs);
-            if (res.values().len != enum_info.fields.len) @compileError(error_msg);
-            return res;
+            const oid_to_enum = std.StaticStringMap(Enum).initComptime(static_key_pairs);
+            if (oid_to_enum.values().len != enum_info.fields.len) @compileError(error_msg);
+
+            return ReturnType{ .oid_to_enum = oid_to_enum, .enum_to_oid = enum_to_oid };
         }
     };
 }

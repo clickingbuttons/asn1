@@ -123,10 +123,11 @@ pub const ToBeSigned = struct {
                 const date = self.date;
                 const time = self.time;
 
-                try encoder.tagLength(.{ .number = .utc_time }, "yymmddHHmmssZ".len);
+                try encoder.tag(.{ .number = .utc_time });
+                try encoder.length("yymmddHHmmssZ".len);
                 const year: u16 = if (date.year > 2000) date.year - 2000 else date.year - 1900;
                 const args = .{ year, date.month.numeric(), date.day, time.hour, time.minute, time.second };
-                try encoder.writer.print("{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}Z", args);
+                try encoder.writer().print("{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}Z", args);
                 // try der.Encoder.tagLength(writer, .{ .number = .generalized_time }, "yyyymmddHHmmssZ".len);
                 // try writer.print("{d:0>4}{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}Z", .{ date.year, date.month.numeric(), date.day, time.hour, time.minute, time.second });
             }
@@ -223,13 +224,13 @@ pub const ToBeSigned = struct {
             pub fn encodeDer(self: Algorithm, encoder: *der.Encoder) !void {
                 switch (self) {
                     .rsa => {
-                        try encoder.any(.{ Tag.oid(.rsa), .{null} });
+                        try encoder.any(.{ Tag.oids.enumToOid(.rsa), .{null} });
                     },
-                    .ecdsa => |info| {
-                        try encoder.any(.{ Tag.oid(.ecdsa), .{NamedCurve.oid(info)} });
+                    .ecdsa => |curve| {
+                        try encoder.any(.{ Tag.oids.enumToOid(.ecdsa), .{NamedCurve.oids.enumToOid(curve)} });
                     },
                     .ed25519 => {
-                        try encoder.any(.{ Tag.oid(.ed25519), .{null} });
+                        try encoder.any(.{ Tag.oids.enumToOid(.ed25519), .{null} });
                     },
                 }
             }
@@ -255,31 +256,31 @@ pub const ToBeSigned = struct {
             while (decoder.index < seq.slice.end) {
                 const ext = try decoder.expect(Extension);
                 const doc_bytes = ext.value.bytes;
-                var doc_parser = der.Decoder{ .bytes = doc_bytes };
+                var doc_decoder = der.Decoder{ .bytes = doc_bytes };
                 var parsed = false;
-                if (Extension.Tag.oids.get(ext.tag.encoded)) |tag| {
+                if (Extension.Tag.oids.oidToEnum(ext.tag.encoded)) |tag| {
                     parsed = true;
                     switch (tag) {
                         .key_usage => {
-                            res.key_usage = try KeyUsage.decodeDer(&doc_parser);
+                            res.key_usage = try KeyUsage.decodeDer(&doc_decoder);
                         },
                         .key_usage_ext => {
-                            res.key_usage_ext = try KeyUsageExt.decodeDer(&doc_parser);
+                            res.key_usage_ext = try KeyUsageExt.decodeDer(&doc_decoder);
                         },
                         .subject_alt_name => {
-                            const seq2 = try doc_parser.sequence();
-                            res.subject_aliases = .{ .bytes = doc_parser.view(seq2) };
+                            const seq2 = try doc_decoder.sequence();
+                            res.subject_aliases = .{ .bytes = doc_decoder.view(seq2) };
                         },
                         .basic_constraints => {
                             res.basic_constraints = try BasicConstraints.fromDer(doc_bytes);
                         },
                         // .subject_key_identifier => {
-                        //     const string = try doc_parser.element(ExpectedTag.primitive(.octetstring));
-                        //     res.subject_key_identifier = doc_parser.view(string);
+                        //     const string = try doc_decoder.element(ExpectedTag.primitive(.octetstring));
+                        //     res.subject_key_identifier = doc_decoder.view(string);
                         // },
                         .certificate_policies => {
-                            const seq2 = try doc_parser.sequence();
-                            res.policies = .{ .bytes = doc_parser.view(seq2) };
+                            const seq2 = try doc_decoder.sequence();
+                            res.policies = .{ .bytes = doc_decoder.view(seq2) };
                         },
                         else => {
                             parsed = false;
@@ -296,6 +297,21 @@ pub const ToBeSigned = struct {
                 }
             }
             return res;
+        }
+
+        pub fn encodeDer(self: Extensions, encoder: *der.Encoder) !void {
+            var buffer: [1024]u8 = undefined;
+            var stream = std.io.fixedBufferStream(&buffer);
+            var encoder2 = der.Encoder.init(stream.writer().any());
+            try self.key_usage.?.encodeDer(&encoder2);
+            const bytes1 = stream.getWritten();
+            const ext1 = Extension{
+                .tag = Extension.Tag.oids.enumToOid(.key_usage),
+                .critical = true,
+                .value = .{ .bytes = bytes1 }
+            };
+
+            try encoder.any(.{ ext1 });
         }
 
         const Extension = struct {
@@ -363,43 +379,35 @@ pub const ToBeSigned = struct {
 
         /// How `pub_key` may be used.
         pub const KeyUsage = packed struct {
-            digital_signature: bool = false,
-            content_commitment: bool = false,
-            key_encipherment: bool = false,
-            data_encipherment: bool = false,
-            key_agreement: bool = false,
-            // MUST be false when basic_constraints.is_ca == false
-            key_cert_sign: bool = false,
-            crl_sign: bool = false,
             encipher_only: bool = false,
+            crl_sign: bool = false,
+            key_cert_sign: bool = false,
+            // MUST be false when basic_constraints.is_ca == false
+            key_agreement: bool = false,
+            data_encipherment: bool = false,
+            key_encipherment: bool = false,
+            content_commitment: bool = false,
+            digital_signature: bool = false,
+
             decipher_only: bool = false,
 
-            pub fn decodeDer(parser: *der.Decoder) !KeyUsage {
-                const key_usage = try parser.expect(asn1.BitString);
+            const Backing = @typeInfo(KeyUsage).Struct.backing_integer.?;
+            const T = std.meta.Int(.unsigned, @sizeOf(KeyUsage) * 8);
+
+            pub fn decodeDer(decoder: *der.Decoder) !KeyUsage {
+                const key_usage = try decoder.expect(asn1.BitString);
                 if (key_usage.bitLen() > @bitSizeOf(KeyUsage)) return error.InvalidKeyUsage;
 
-                const T = std.meta.Int(.unsigned, @bitSizeOf(KeyUsage));
-                const int = std.mem.readVarPackedInt(
-                    T,
-                    key_usage.bytes,
-                    0,
-                    key_usage.bitLen(),
-                    .big,
-                    .unsigned,
-                );
-
+                const int = std.mem.readVarInt(Backing, key_usage.bytes, .big);
                 return @bitCast(int);
             }
 
             pub fn encodeDer(self: KeyUsage, encoder: *der.Encoder) !void {
-                try encoder.tag(.{ .number = .sequence, .constructed = true });
-
-                try encoder.any(Extension.Tag.oid(.key_usage));
-                try encoder.any(true);
-
-                const bytes: []const u8 = std.mem.asBytes(&self);
-                try encoder.tag(.{ .number = .octetstring, .constructed = true });
-                try encoder.any(asn1.BitString{ .bytes = bytes });
+                const value: Backing = @bitCast(self);
+                const oversized: T = value;
+                var buffer: [@sizeOf(KeyUsage)]u8 = undefined;
+                std.mem.writeInt(T, &buffer, oversized, .big);
+                try encoder.any(asn1.BitString.init(&buffer));
             }
         };
 
@@ -430,13 +438,13 @@ pub const ToBeSigned = struct {
                 });
             };
 
-            pub fn decodeDer(parser: *der.Decoder) !KeyUsageExt {
-                const seq = try parser.sequence();
-                defer parser.index = seq.slice.end;
+            pub fn decodeDer(decoder: *der.Decoder) !KeyUsageExt {
+                const seq = try decoder.sequence();
+                defer decoder.index = seq.slice.end;
 
                 var res: KeyUsageExt = .{};
-                while (parser.index < parser.bytes.len) {
-                    const tag = parser.expectEnum(Tag) catch |err| switch (err) {
+                while (decoder.index < decoder.bytes.len) {
+                    const tag = decoder.expectEnum(Tag) catch |err| switch (err) {
                         error.UnknownOid => continue,
                         else => return err,
                     };
@@ -466,12 +474,12 @@ pub const ToBeSigned = struct {
             pub fn fromDer(bytes: []const u8) !BasicConstraints {
                 var res: BasicConstraints = .{};
 
-                var parser = der.Decoder{ .bytes = bytes };
-                _ = try parser.sequence();
-                if (!parser.eof()) {
-                    res.is_ca = try parser.expect(bool);
-                    if (!parser.eof()) {
-                        res.max_path_len = try parser.expect(PathLen);
+                var decoder = der.Decoder{ .bytes = bytes };
+                _ = try decoder.sequence();
+                if (!decoder.eof()) {
+                    res.is_ca = try decoder.expect(bool);
+                    if (!decoder.eof()) {
+                        res.max_path_len = try decoder.expect(PathLen);
                         if (!res.is_ca) return error.NotCA;
                     }
                 }
@@ -568,9 +576,9 @@ pub const AlgorithmIdentifier = union(enum) {
     pub fn encodeDer(self: AlgorithmIdentifier, encoder: *der.Encoder) !void {
         switch (self) {
             .rsa_pkcs => |info| try encoder.any(.{info}),
-            .rsa_pss => |info| try encoder.any(.{ Algorithm.oid(.pss), info }),
+            .rsa_pss => |info| try encoder.any(.{ Algorithm.oids.enumToOid(.rsa_pss), info }),
             .ecdsa => |info| try encoder.any(.{info}),
-            .ed25519 => try encoder.any(.{Algorithm.oid(.ed25519)}),
+            .ed25519 => try encoder.any(.{Algorithm.oids.enumToOid(.ed25519)}),
         }
     }
 

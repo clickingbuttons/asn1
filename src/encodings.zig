@@ -182,6 +182,7 @@ pub const Tag = struct {
 
         switch (@typeInfo(T)) {
             .Struct => return .{ .number = .sequence, .constructed = true },
+            .Union => return .{ .number = .sequence_of, .constructed = true },
             .Bool => return .{ .number = .boolean },
             .Int => return .{ .number = .integer },
             .Enum => |e| return .{ .number = if (e.is_exhaustive) .enumerated else .integer },

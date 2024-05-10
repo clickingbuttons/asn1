@@ -30,7 +30,7 @@ fn tagLengthValue(self: *Encoder, tag_: encodings.Tag, val: anytype) !void {
         .Bool => {
             try self.tag(tag_);
             try self.length(1);
-            try self.writer.writeByte(if (val) 0xff else 0);
+            try self.writer().writeByte(if (val) 0xff else 0);
         },
         .Int => {
             try self.tag(tag_);
@@ -38,11 +38,7 @@ fn tagLengthValue(self: *Encoder, tag_: encodings.Tag, val: anytype) !void {
         },
         .Enum => |e| {
             if (@hasDecl(T, "oids")) {
-                // TODO: Make static map of enum value -> string for O(1) encoding instead of O(n).
-                for (T.oids.values(), 0..) |v, i| {
-                    if (v == val) return self.any(asn1.Oid{ .encoded = T.oids.keys()[i] });
-                }
-                unreachable; // Oid.StaticMap verifies all members are accounted for at comptime.
+                return self.any(T.oids.enumToOid(val));
             } else {
                 try self.tag(tag_);
                 try self.intLengthValue(e.tag_type, @intFromEnum(val));
@@ -57,14 +53,14 @@ fn tagLengthValue(self: *Encoder, tag_: encodings.Tag, val: anytype) !void {
     }
 }
 
-inline fn @"struct"(self: *Encoder, val: anytype) !void {
+fn @"struct"(self: *Encoder, val: anytype) !void {
     const T = @TypeOf(val);
     inline for (@typeInfo(T).Struct.fields) |f| {
         const field_val = @field(val, f.name);
 
         // > The encoding of a set value or sequence value shall not include an encoding for any
         // > component value which is equal to its default value.
-        const is_default = if (f.default_value) |v| brk: {
+        const is_default = if (f.is_comptime) false else if (f.default_value) |v| brk: {
             const default_val: *const f.type = @alignCast(@ptrCast(v));
             break :brk std.mem.eql(u8, std.mem.asBytes(default_val), std.mem.asBytes(&field_val));
         } else false;
