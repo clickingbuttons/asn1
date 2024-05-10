@@ -173,7 +173,7 @@ pub const Tag = struct {
     }
 
     pub fn fromZig(comptime T: type) Tag {
-      switch (@typeInfo(T)) {
+        switch (@typeInfo(T)) {
             .Struct, .Enum, .Union => {
                 if (@hasDecl(T, "asn1_tag")) return T.asn1_tag;
             },
@@ -184,7 +184,7 @@ pub const Tag = struct {
             .Struct => return .{ .number = .sequence, .constructed = true },
             .Bool => return .{ .number = .boolean },
             .Int => return .{ .number = .integer },
-            .Enum => |e| return .{ .number = if (e.is_exhaustive) .integer else .enumerated },
+            .Enum => |e| return .{ .number = if (e.is_exhaustive) .enumerated else .integer },
             .Optional => |o| return fromZig(o.child),
             .Null => return .{ .number = .null },
             else => @compileError("cannot encode Zig type " ++ @typeName(T)),

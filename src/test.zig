@@ -3,15 +3,14 @@ const asn1 = @import("./asn1.zig");
 const hexToBytes = @import("./encodings.zig").hexToBytes;
 const Certificate = @import("./Certificate.zig");
 
-const comptimeOid = asn1.Oid.encodeComptime;
 const der = asn1.der;
 const FieldTag = asn1.encodings.FieldTag;
 
 const AllTypes = struct {
     a: u8 = 0,
     b: asn1.BitString,
-    c: asn1.Oid,
-    d: asn1.String,
+    c: C,
+    d: asn1.Opaque(.{ .number = .string_utf8 }),
     e: asn1.Opaque(.{ .number = .octetstring }),
     f: ?u16,
     g: ?Nested,
@@ -21,6 +20,16 @@ const AllTypes = struct {
         .b = FieldTag.explicit(1, .context_specific),
         .c = FieldTag.implicit(2, .context_specific),
         .g = FieldTag.implicit(3, .context_specific),
+    };
+
+    const C = enum {
+        a,
+        b,
+
+        pub const oids = asn1.Oid.StaticMap(@This()).initComptime(.{
+            .a = "1.2.3.4",
+            .b = "1.2.3.5",
+        });
     };
 
     const Nested = struct {
@@ -53,8 +62,8 @@ test AllTypes {
     const expected = AllTypes{
         .a = 2,
         .b = asn1.BitString{ .bytes = &hexToBytes("04a0") },
-        .c = asn1.Oid{ .encoded = &comptimeOid("1.2.3.4") },
-        .d = asn1.String{ .tag = .utf8, .data = "asdf" },
+        .c = .a,
+        .d = .{ .bytes = "asdf" },
         .e = .{ .bytes = "fdsa" },
         .f = (1 << 8) + 1,
         .g = .{
@@ -80,13 +89,18 @@ test AllTypes {
     // try file.writeAll(stream.getWritten());
 }
 
-// test Certificate {
-//     const encoded = @embedFile("./der/testdata/cert_rsa2048.der");
-//     const cert = try asn1.der.decode(Certificate, encoded);
-//     // std.debug.print("{}\n", .{cert});
-//
-//     var buf: [4096]u8 = undefined;
-//     var stream = std.io.fixedBufferStream(&buf);
-//     try asn1.der.encode(cert, stream.writer());
-//     try std.testing.expectEqualSlices(u8, encoded, stream.getWritten());
-// }
+test Certificate {
+    const encoded = @embedFile("./der/testdata/cert_rsa2048.der");
+    const cert = try asn1.der.decode(Certificate, encoded);
+    std.debug.print("cert {}\n", .{cert});
+
+    // var buf: [4096]u8 = undefined;
+    // var stream = std.io.fixedBufferStream(&buf);
+    // try asn1.der.encode(cert, stream.writer());
+    // // try std.testing.expectEqualSlices(u8, encoded, stream.getWritten());
+
+    // const dir = try std.fs.cwd().openDir("src", .{});
+    // var file = try dir.createFile("./der/testdata/cert_rsa2048_mine.der", .{});
+    // defer file.close();
+    // try file.writeAll(stream.getWritten());
+}

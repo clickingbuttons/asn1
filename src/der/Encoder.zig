@@ -37,8 +37,16 @@ fn tagLengthValue(self: *Encoder, tag_: encodings.Tag, val: anytype) !void {
             try self.intLengthValue(T, val);
         },
         .Enum => |e| {
-            try self.tag(tag_);
-            try self.intLengthValue(e.tag_type, @intFromEnum(val));
+            if (@hasDecl(T, "oids")) {
+                // TODO: Make static map of enum value -> string for O(1) encoding instead of O(n).
+                for (T.oids.values(), 0..) |v, i| {
+                    if (v == val) return self.any(asn1.Oid{ .encoded = T.oids.keys()[i] });
+                }
+                unreachable; // Oid.StaticMap verifies all members are accounted for at comptime.
+            } else {
+                try self.tag(tag_);
+                try self.intLengthValue(e.tag_type, @intFromEnum(val));
+            }
         },
         .Optional => if (val) |v| return try self.tagLengthValue(tag_, v),
         .Null => {
@@ -49,11 +57,10 @@ fn tagLengthValue(self: *Encoder, tag_: encodings.Tag, val: anytype) !void {
     }
 }
 
-fn @"struct"(self: *Encoder, val: anytype) !void {
+inline fn @"struct"(self: *Encoder, val: anytype) !void {
     const T = @TypeOf(val);
     inline for (@typeInfo(T).Struct.fields) |f| {
         const field_val = @field(val, f.name);
-        const field_tag = Tag.fromZig(f.type);
 
         // > The encoding of a set value or sequence value shall not include an encoding for any
         // > component value which is equal to its default value.
@@ -68,11 +75,12 @@ fn @"struct"(self: *Encoder, val: anytype) !void {
                 if (ft.explicit) {
                     var fake_encoder = Encoder.init(std.io.null_writer.any());
                     try fake_encoder.tagLengthValue(Tag.fromZig(f.type), field_val);
-                    try self.tag(Tag.init(@enumFromInt(ft.number), true, ft.class));
+                    try self.tag(Tag.init(undefined, true, undefined));
                     try self.length(fake_encoder.underlying.bytes_written);
+                    self.field_tag = null;
                 }
             }
-            try self.tagLengthValue(field_tag, field_val);
+            try self.tagLengthValue(Tag.fromZig(f.type), field_val);
         }
     }
 }
@@ -115,7 +123,7 @@ fn intLengthValue(self: *Encoder, comptime T: type, value: T) !void {
         1
     else if (bits_needed > 8) brk: {
         const RightShift = std.meta.Int(.unsigned, @bitSizeOf(@TypeOf(bits_needed)) - 1);
-        const right_shift:  RightShift = @intCast(bits_needed - 9);
+        const right_shift: RightShift = @intCast(bits_needed - 9);
         break :brk if (value >> right_shift == 0x1ff) 1 else 0;
     } else 0;
     const bytes_needed = try std.math.divCeil(usize, bits_needed, 8) + needs_padding;

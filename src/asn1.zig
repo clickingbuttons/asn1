@@ -28,9 +28,8 @@ pub const BitString = struct {
         if (padding >= 8) return error.InvalidBitString;
         const right_padding: u3 = @intCast(padding);
 
-        // DER requires that unused bits be zero
-        const last_byte_trunc = bytes[bytes.len - 1] >> right_padding << right_padding;
-        if (bytes[bytes.len - 1] != last_byte_trunc) return error.InvalidBitString;
+        // DER requires that unused bits be zero.
+        if (@ctz(bytes[bytes.len - 1]) < right_padding) return error.InvalidBitString;
 
         return BitString{ .bytes = bytes[1..], .right_padding = right_padding };
     }
@@ -40,77 +39,6 @@ pub const BitString = struct {
         try encoder.length(self.bytes.len + 1);
         try encoder.writer().writeByte(self.right_padding);
         try encoder.writer().writeAll(self.bytes);
-    }
-};
-
-pub const String = struct {
-    tag: String.Tag,
-    data: []const u8,
-
-    pub const Tag = enum {
-        utf8,
-        /// us-ascii ([-][0-9][eE][.])*
-        numeric,
-        /// us-ascii ([A-Z][a-z][0-9][.?!,][ \t])*
-        printable,
-        /// iso-8859-1 with escaping into different character sets
-        teletex,
-        /// iso-8859-1
-        videotex,
-        /// us-ascii first 128 characters
-        ia5,
-        /// us-ascii without control characters
-        visible,
-        /// utf-32-be
-        universal,
-        /// utf-16-be
-        bmp,
-        /// character set deferred to runtime
-        char,
-        /// any standarized character set
-        any,
-        /// any standarized character set, no control characters
-        graphic,
-        /// alternative to oids
-        object_descriptor,
-    };
-
-    pub fn decodeDer(decoder: *der.Decoder) !String {
-        const last_index = decoder.index;
-        const ele = decoder.element(encodings.ExpectedTag.init(null, false, .universal)) catch |err| {
-            decoder.index = last_index;
-            return err;
-        };
-        switch (ele.tag.number) {
-            inline .string_utf8,
-            .string_numeric,
-            .string_printable,
-            .string_teletex,
-            .string_videotex,
-            .string_ia5,
-            .string_visible,
-            .string_universal,
-            .string_bmp,
-            .string_char,
-            .string_graphic,
-            .string_general,
-            .object_descriptor,
-            => |t| {
-                const tagname = @tagName(t)["string_".len..];
-                const tag = std.meta.stringToEnum(String.Tag, tagname) orelse unreachable;
-                return String{ .tag = tag, .data = decoder.view(ele) };
-            },
-            else => return error.InvalidString,
-        }
-    }
-
-    pub fn encodeDer(self: String, encoder: *der.Encoder) !void {
-        const number: encodings.Tag.Number = switch (self.tag) {
-            inline else => |t| std.meta.stringToEnum(encodings.Tag.Number, "string_" ++ @tagName(t)).?,
-        };
-        try encoder.tag(encodings.Tag.init(number, false, .universal));
-        try encoder.length(self.data.len);
-        try encoder.writer().writeAll(self.data);
     }
 };
 

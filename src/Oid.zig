@@ -140,61 +140,33 @@ test encodeComptime {
     );
 }
 
-pub fn Enum(comptime key_pairs: anytype) type {
-    var enum_fields: [key_pairs.len]std.builtin.Type.EnumField = undefined;
-    comptime for (key_pairs, 0..) |kp, i| {
-        enum_fields[i] = std.builtin.Type.EnumField{ .name = @tagName(kp.@"1"), .value = i };
-    };
-
-    const EnumT = @Type(std.builtin.Type{
-        .Enum = .{
-            .tag_type = u8,
-            .fields = &enum_fields,
-            .decls = &[_]std.builtin.Type.Declaration{},
-            .is_exhaustive = true,
-        },
-    });
-
-    const KeyPair = struct { []const u8, EnumT };
-    comptime var static_key_pairs: [key_pairs.len]KeyPair = undefined;
-    comptime for (key_pairs, 0..) |kp, i| {
-        static_key_pairs[i] = .{ &encodeComptime(kp.@"0"), kp.@"1" };
-    };
-
+pub fn StaticMap(comptime Enum: type) type {
     return struct {
-        pub const Enum = EnumT;
+        pub fn initComptime(comptime key_pairs: anytype) std.StaticStringMap(Enum) {
+            const enum_info = @typeInfo(Enum).Enum;
+            const struct_info = @typeInfo(@TypeOf(key_pairs)).Struct;
+            const error_msg = "Each field of '" ++ @typeName(Enum) ++ "' must map to exactly one OID";
+            if (!enum_info.is_exhaustive or enum_info.fields.len != struct_info.fields.len) {
+                @compileError(error_msg);
+            }
 
-        pub const oids = std.StaticStringMap(EnumT).initComptime(static_key_pairs);
+            const KeyPair = struct { []const u8, Enum };
+            comptime var static_key_pairs: [enum_info.fields.len]KeyPair = undefined;
 
-        pub fn oid(value: EnumT) Oid {
-            return switch (value) {
-                inline else => |v| {
-                    inline for (key_pairs, 0..) |kp, i| {
-                        if (kp.@"1" == v) return Oid{ .encoded = static_key_pairs[i].@"0" };
-                    }
-                    unreachable;
-                },
+            comptime for (enum_info.fields, 0..) |f, i| {
+                if (!@hasField(@TypeOf(key_pairs), f.name)) {
+                    @compileError("Field '" ++ f.name ++ "' missing StaticMap OID entry");
+                }
+                const encoded = &encodeComptime(@field(key_pairs, f.name));
+                const tag: Enum = @enumFromInt(f.value);
+                static_key_pairs[i] = .{ encoded, tag };
             };
+
+            const res = std.StaticStringMap(Enum).initComptime(static_key_pairs);
+            if (res.values().len != enum_info.fields.len) @compileError(error_msg);
+            return res;
         }
     };
-}
-
-test Enum {
-    const T = Enum(.{
-        .{ "1.2.840.113549.1.1.5", .rsa_pkcs_sha1 },
-        .{ "1.2.840.113549.1.1.10", .rsa_pss },
-        .{ "1.2.840.113549.1.1.11", .rsa_pkcs_sha256 },
-        .{ "1.2.840.113549.1.1.12", .rsa_pkcs_sha384 },
-        .{ "1.2.840.113549.1.1.13", .rsa_pkcs_sha512 },
-        .{ "1.2.840.113549.1.1.14", .rsa_pkcs_sha224 },
-        .{ "1.2.840.10045.4.3.1", .ecdsa_sha224 },
-        .{ "1.2.840.10045.4.3.2", .ecdsa_sha256 },
-        .{ "1.2.840.10045.4.3.3", .ecdsa_sha384 },
-        .{ "1.2.840.10045.4.3.4", .ecdsa_sha512 },
-        .{ "1.3.101.112", .ed25519 },
-    });
-    try std.testing.expectEqual(.ed25519, T.oids.get(&encodeComptime("1.3.101.112")));
-    try std.testing.expectEqual(Oid{ .encoded = &[_]u8{ 43, 101, 112 } }, T.oid(.ed25519));
 }
 
 const std = @import("std");

@@ -23,9 +23,10 @@ pub fn expect(self: *Decoder, comptime T: type) !T {
 
                 if (self.field_tag) |ft| {
                     if (ft.explicit) {
-                        const expected = Tag.init(@enumFromInt(ft.number), true, ft.class).toExpected();
+                        const expected = Tag.init(undefined, true, undefined).toExpected();
                         const seq = try self.element(expected);
                         self.index = seq.slice.start;
+                        self.field_tag = null;
                     }
                 }
 
@@ -43,7 +44,7 @@ pub fn expect(self: *Decoder, comptime T: type) !T {
                 }
             }
 
-            try self.expectEnd(ele.slice.end);
+            std.debug.assert(self.index == ele.slice.end);
             return res;
         },
         .Bool => {
@@ -66,8 +67,7 @@ pub fn expect(self: *Decoder, comptime T: type) !T {
             const ele = try self.element(tag);
             const bytes = self.view(ele);
             if (@hasDecl(T, "oids")) {
-                const oid = try self.expect(asn1.Oid);
-                return T.oids.get(oid.encoded) orelse return error.UnknownOid;
+                return T.oids.get(bytes) orelse return error.UnknownOid;
             }
             return @enumFromInt(try int(e.tag_type, bytes));
         },
@@ -76,7 +76,7 @@ pub fn expect(self: *Decoder, comptime T: type) !T {
     }
 }
 
-pub fn expectEnum(self: *Decoder, comptime T: type) !T.Enum {
+pub fn expectEnum(self: *Decoder, comptime T: type) !T {
     const oid = try self.expect(asn1.Oid);
     return T.oids.get(oid.encoded) orelse return error.UnknownOid;
 }
@@ -108,7 +108,7 @@ fn int(comptime T: type, value: []const u8) !T {
 }
 
 test int {
-    try expectEqual(@as(u8, 1), try int(u8, &[_]u8{ 1 }));
+    try expectEqual(@as(u8, 1), try int(u8, &[_]u8{1}));
     try expectError(error.NonCanonical, int(u8, &[_]u8{ 0, 1 }));
     try expectError(error.NonCanonical, int(u8, &[_]u8{ 0xff, 0xff }));
 
@@ -117,18 +117,8 @@ test int {
     try expectEqual(0xefff, int(u16, &big));
 }
 
-/// Remember to call `expectEnd`
 pub fn sequence(self: *Decoder) !Element {
     return try self.element(ExpectedTag.init(.sequence, true, .universal));
-}
-
-/// Remember to call `expectEnd`
-pub fn sequenceOf(self: *Decoder) !Element {
-    return try self.element(ExpectedTag.init(.sequence_of, true, .universal));
-}
-
-pub fn expectEnd(self: *Decoder, val: usize) !void {
-    if (self.index != val) return error.NonCanonical; // either forgot to parse OR a length-extension attack
 }
 
 pub fn element(self: *Decoder, expected: ExpectedTag) !Element {
@@ -140,7 +130,10 @@ pub fn element(self: *Decoder, expected: ExpectedTag) !Element {
         e.number = @enumFromInt(ft.number);
         e.class = ft.class;
     }
-    if (!e.equal(res.tag)) return error.UnexpectedElement;
+    if (!e.equal(res.tag)) {
+        std.debug.print("expected {} got {}\n", .{ e, res });
+        return error.UnexpectedElement;
+    }
 
     self.index = if (res.tag.constructed) res.slice.start else res.slice.end;
     return res;
@@ -155,12 +148,12 @@ test Decoder {
         _ = try parser.element(ExpectedTag.init(.oid, false, .universal));
         _ = try parser.element(ExpectedTag.init(.oid, false, .universal));
 
-        try parser.expectEnd(seq2.slice.end);
+        try std.testing.expectEqual(parser.index, seq2.slice.end);
     }
     _ = try parser.element(ExpectedTag.init(.bitstring, false, .universal));
 
-    try parser.expectEnd(seq.slice.end);
-    try parser.expectEnd(parser.bytes.len);
+    try std.testing.expectEqual(parser.index, seq.slice.end);
+    try std.testing.expectEqual(parser.index, parser.bytes.len);
 }
 
 const std = @import("std");
