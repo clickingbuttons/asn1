@@ -171,7 +171,33 @@ pub const Tag = struct {
             .class = self.class,
         };
     }
+
+    pub fn fromZig(comptime T: type) Tag {
+      switch (@typeInfo(T)) {
+            .Struct, .Enum, .Union => {
+                if (@hasDecl(T, "asn1_tag")) return T.asn1_tag;
+            },
+            else => {},
+        }
+
+        switch (@typeInfo(T)) {
+            .Struct => return .{ .number = .sequence, .constructed = true },
+            .Bool => return .{ .number = .boolean },
+            .Int => return .{ .number = .integer },
+            .Enum => |e| return .{ .number = if (e.is_exhaustive) .integer else .enumerated },
+            .Optional => |o| return fromZig(o.child),
+            .Null => return .{ .number = .null },
+            else => @compileError("cannot encode Zig type " ++ @typeName(T)),
+        }
+    }
 };
+
+test Tag {
+    const buf = [_]u8{0xa3};
+    var stream = std.io.fixedBufferStream(&buf);
+    const t = Tag.decode(stream.reader());
+    try std.testing.expectEqual(Tag.init(@enumFromInt(3), true, .context_specific), t);
+}
 
 pub const ExpectedTag = struct {
     number: ?Tag.Number = null,
@@ -194,6 +220,41 @@ pub const ExpectedTag = struct {
             .Bool => .{ .number = .boolean, .constructed = false, .class = .universal },
             .Int => .{ .number = .integer, .constructed = false, .class = .universal },
         };
+    }
+
+    pub fn equal(self: ExpectedTag, tag: Tag) bool {
+        if (self.number) |e| {
+            if (tag.number != e) return false;
+        }
+        if (self.constructed) |e| {
+            if (tag.constructed != e) return false;
+        }
+        if (self.class) |e| {
+            if (tag.class != e) return false;
+        }
+        return true;
+    }
+};
+
+pub const FieldTag = struct {
+    number: std.meta.Tag(Tag.Number),
+    class: Tag.Class,
+    explicit: bool = true,
+
+    pub fn explicit(number: std.meta.Tag(Tag.Number), class: Tag.Class) FieldTag {
+        return FieldTag{ .number = number, .class = class, .explicit = true };
+    }
+
+    pub fn implicit(number: std.meta.Tag(Tag.Number), class: Tag.Class) FieldTag {
+        return FieldTag{ .number = number, .class = class, .explicit = false };
+    }
+
+    pub fn fromContainer(comptime Container: type, comptime field_name: []const u8) ?FieldTag {
+        if (@hasDecl(Container, "asn1_tags") and @hasField(@TypeOf(Container.asn1_tags), field_name)) {
+            return @field(Container.asn1_tags, field_name);
+        }
+
+        return null;
     }
 };
 

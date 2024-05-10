@@ -16,7 +16,8 @@ pub fn decode(comptime T: type, encoded: []const u8) !T {
 }
 
 pub fn encode(value: anytype, writer: anytype) !void {
-    return try Encoder.encodeAny(value, writer);
+    var encoder = Encoder.init(writer.any());
+    try encoder.any(value);
 }
 
 test {

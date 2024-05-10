@@ -35,10 +35,11 @@ pub const BitString = struct {
         return BitString{ .bytes = bytes[1..], .right_padding = right_padding };
     }
 
-    pub fn encodeDer(self: BitString, writer: anytype) !void {
-        try der.Encoder.tagLength(writer, asn1_tag, self.bytes.len + 1);
-        try writer.writeByte(self.right_padding);
-        try writer.writeAll(self.bytes);
+    pub fn encodeDer(self: BitString, encoder: *der.Encoder) !void {
+        try encoder.tag(asn1_tag);
+        try encoder.length(self.bytes.len + 1);
+        try encoder.writer().writeByte(self.right_padding);
+        try encoder.writer().writeAll(self.bytes);
     }
 };
 
@@ -103,12 +104,13 @@ pub const String = struct {
         }
     }
 
-    pub fn encodeDer(self: String, writer: anytype) !void {
+    pub fn encodeDer(self: String, encoder: *der.Encoder) !void {
         const number: encodings.Tag.Number = switch (self.tag) {
             inline else => |t| std.meta.stringToEnum(encodings.Tag.Number, "string_" ++ @tagName(t)).?,
         };
-        try der.Encoder.tagLength(writer, .{ .number = number }, self.data.len);
-        try writer.writeAll(self.data);
+        try encoder.tag(encodings.Tag.init(number, false, .universal));
+        try encoder.length(self.data.len);
+        try encoder.writer().writeAll(self.data);
     }
 };
 
@@ -123,9 +125,10 @@ pub fn Opaque(comptime tag: encodings.Tag) type {
             return .{ .bytes = decoder.view(ele) };
         }
 
-        pub fn encodeDer(self: @This(), writer: anytype) !void {
-            try der.Encoder.tagLength(writer, tag, self.bytes.len);
-            try writer.writeAll(self.bytes);
+        pub fn encodeDer(self: @This(), encoder: *der.Encoder) !void {
+            try encoder.tag(tag);
+            try encoder.length(self.bytes.len);
+            try encoder.writer().writeAll(self.bytes);
         }
     };
 }

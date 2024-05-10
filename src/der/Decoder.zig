@@ -6,41 +6,74 @@
 //!     - Booleans that are not 0xff or 0x00.
 bytes: []const u8,
 index: Index = 0,
+/// The field tag of the most recently visited field.
+field_tag: ?FieldTag = null,
 
 pub fn expect(self: *Decoder, comptime T: type) !T {
     if (std.meta.hasFn(T, "decodeDer")) return try T.decodeDer(self);
 
+    const tag = Tag.fromZig(T).toExpected();
     switch (@typeInfo(T)) {
         .Struct => {
+            const ele = try self.element(tag);
             var res: T = undefined;
-            const seq = try self.sequence();
 
             inline for (std.meta.fields(T)) |f| {
+                self.field_tag = FieldTag.fromContainer(T, f.name);
+
+                if (self.field_tag) |ft| {
+                    if (ft.explicit) {
+                        const expected = Tag.init(@enumFromInt(ft.number), true, ft.class).toExpected();
+                        const seq = try self.element(expected);
+                        self.index = seq.slice.start;
+                    }
+                }
+
                 @field(res, f.name) = self.expect(f.type) catch |err| brk: {
                     if (f.default_value) |d| {
-                        const v: *const f.type = @alignCast(@ptrCast(d));
-                        break :brk v.*;
+                        break :brk @as(*const f.type, @alignCast(@ptrCast(d))).*;
                     }
                     return err;
                 };
+                // DER encodes null values by skipping them.
+                if (@typeInfo(f.type) == .Optional and @field(res, f.name) == null) {
+                    if (f.default_value) |d| {
+                        @field(res, f.name) = @as(*const f.type, @alignCast(@ptrCast(d))).*;
+                    }
+                }
             }
 
-            try self.expectEnd(seq.slice.end);
+            try self.expectEnd(ele.slice.end);
             return res;
         },
-        .Bool => return try self.boolean(),
-        .Int => return try self.int(T),
+        .Bool => {
+            const ele = try self.element(tag);
+            const bytes = self.view(ele);
+            if (bytes.len != 1) return error.InvalidBool;
+
+            return switch (bytes[0]) {
+                0x00 => false,
+                0xff => true,
+                else => error.InvalidBool,
+            };
+        },
+        .Int => {
+            const ele = try self.element(tag);
+            const bytes = self.view(ele);
+            return try int(T, bytes);
+        },
         .Enum => |e| {
+            const ele = try self.element(tag);
+            const bytes = self.view(ele);
             if (@hasDecl(T, "oids")) {
                 const oid = try self.expect(asn1.Oid);
                 return T.oids.get(oid.encoded) orelse return error.UnknownOid;
             }
-            return @enumFromInt(try self.int(e.tag_type));
+            return @enumFromInt(try int(e.tag_type, bytes));
         },
         .Optional => |o| return self.expect(o.child) catch return null,
-        else => {},
+        else => @compileError("cannot decode type " ++ @typeName(T)),
     }
-    @compileError("cannot decode type " ++ @typeName(T));
 }
 
 pub fn expectEnum(self: *Decoder, comptime T: type) !T.Enum {
@@ -56,25 +89,10 @@ pub fn eof(self: *Decoder) bool {
     return self.index == self.bytes.len;
 }
 
-fn boolean(self: *Decoder) !bool {
-    const ele = try self.element(ExpectedTag.init(.boolean, false, .universal));
-    if (ele.slice.len() != 1) return error.InvalidBool;
-
-    return switch (self.view(ele)[0]) {
-        0x00 => false,
-        0xff => true,
-        else => error.InvalidBool,
-    };
-}
-
-fn int(self: *Decoder, comptime T: type) !T {
+fn int(comptime T: type, value: []const u8) !T {
     if (@typeInfo(T).Int.bits % 8 != 0) @compileError("T must be byte aligned");
-    const ele = try self.element(.{ .constructed = false, .class = .universal });
-    const last_index = self.index;
-    errdefer self.index = last_index;
-    if (ele.tag.number != .integer and ele.tag.number != .enumerated) return error.UnexpectedElement;
 
-    var bytes = self.view(ele);
+    var bytes = value;
     if (bytes.len >= 2) {
         if (bytes[0] == 0) {
             if (@clz(bytes[1]) > 0) return error.NonCanonical;
@@ -90,33 +108,23 @@ fn int(self: *Decoder, comptime T: type) !T {
 }
 
 test int {
-    const one = [_]u8{ 2, 1, 1 };
-    var parser = Decoder{ .bytes = &one };
-    try std.testing.expectEqual(@as(u8, 1), try parser.int(u8));
+    try expectEqual(@as(u8, 1), try int(u8, &[_]u8{ 1 }));
+    try expectError(error.NonCanonical, int(u8, &[_]u8{ 0, 1 }));
+    try expectError(error.NonCanonical, int(u8, &[_]u8{ 0xff, 0xff }));
 
-    const one_padded = [_]u8{ 2, 2, 0, 1 };
-    parser = Decoder{ .bytes = &one_padded };
-    try std.testing.expectError(error.NonCanonical, parser.int(u8));
-
-    const big_padded = [_]u8{ 2, 2, 0xff, 0xff };
-    parser = Decoder{ .bytes = &big_padded };
-    try std.testing.expectError(error.NonCanonical, parser.int(u8));
-
-    const big = [_]u8{ 2, 2, 0xef, 0xff };
-    parser = Decoder{ .bytes = &big };
-    try std.testing.expectError(error.LargeValue, parser.int(u8));
-    parser.index = 0;
-    try std.testing.expectEqual(0xefff, parser.int(u16));
+    const big = [_]u8{ 0xef, 0xff };
+    try expectError(error.LargeValue, int(u8, &big));
+    try expectEqual(0xefff, int(u16, &big));
 }
 
 /// Remember to call `expectEnd`
 pub fn sequence(self: *Decoder) !Element {
-    return try self.element(encodings.ExpectedTag.init(.sequence, true, .universal));
+    return try self.element(ExpectedTag.init(.sequence, true, .universal));
 }
 
 /// Remember to call `expectEnd`
 pub fn sequenceOf(self: *Decoder) !Element {
-    return try self.element(encodings.ExpectedTag.init(.sequence_of, true, .universal));
+    return try self.element(ExpectedTag.init(.sequence_of, true, .universal));
 }
 
 pub fn expectEnd(self: *Decoder, val: usize) !void {
@@ -127,15 +135,13 @@ pub fn element(self: *Decoder, expected: ExpectedTag) !Element {
     if (self.index >= self.bytes.len) return error.EndOfStream;
 
     const res = try Element.decode(self.bytes, self.index);
-    if (expected.number) |e| {
-        if (res.tag.number != e) return error.UnexpectedElement;
+    var e = expected;
+    if (self.field_tag) |ft| {
+        e.number = @enumFromInt(ft.number);
+        e.class = ft.class;
     }
-    if (expected.constructed) |e| {
-        if (res.tag.constructed != e) return error.UnexpectedElement;
-    }
-    if (expected.class) |e| {
-        if (res.tag.class != e) return error.UnexpectedElement;
-    }
+    if (!e.equal(res.tag)) return error.UnexpectedElement;
+
     self.index = if (res.tag.constructed) res.slice.start else res.slice.end;
     return res;
 }
@@ -163,11 +169,11 @@ const asn1 = @import("../asn1.zig");
 const Oid = @import("../Oid.zig");
 const encodings = @import("../encodings.zig");
 
-const log = std.log.scoped(.der);
 const expectEqual = std.testing.expectEqual;
 const expectError = std.testing.expectError;
 const Decoder = @This();
 const Index = encodings.Index;
 const Tag = encodings.Tag;
+const FieldTag = encodings.FieldTag;
 const ExpectedTag = encodings.ExpectedTag;
 const Element = encodings.Element;

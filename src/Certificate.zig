@@ -1,11 +1,11 @@
 tbs: ToBeSigned,
-sig_algo: SigAlgo,
+signature_algo: AlgorithmIdentifier,
 signature: asn1.BitString,
 
 pub const ToBeSigned = struct {
     version: Version = .v1,
-    serial_number: SerialNumber,
-    sig_algo: SigAlgo,
+    serial_number: asn1.Opaque(.{ .number = .integer }),
+    signature_algo: AlgorithmIdentifier,
     issuer: Name,
     validity: Validity,
     subject: Name,
@@ -15,55 +15,20 @@ pub const ToBeSigned = struct {
     subject_uid: ?asn1.BitString = null,
     extensions: Extensions = .{},
 
-    pub fn decodeDer(decoder: *der.Decoder) !ToBeSigned {
-        const seq = try decoder.sequence();
-
-        var res: ToBeSigned = .{
-            .serial_number = undefined,
-            .sig_algo = undefined,
-            .issuer = undefined,
-            .validity = undefined,
-            .subject = undefined,
-            .subject_pub_key = undefined,
-        };
-        res.version = try decoder.expect(Version);
-        res.serial_number = try decoder.expect(SerialNumber);
-        res.sig_algo = try decoder.expect(SigAlgo);
-        res.issuer = try decoder.expect(Name);
-        res.validity = try decoder.expect(Validity);
-        res.subject = try decoder.expect(Name);
-        res.subject_pub_key = try decoder.expect(PubKey);
-        if (@intFromEnum(res.version) > 0) res.issuer_uid = try decodeUid(decoder, 1);
-        if (@intFromEnum(res.version) > 0) res.subject_uid = try decodeUid(decoder, 2);
-        if (@intFromEnum(res.version) > 1) res.extensions = try Extensions.decodeDer(decoder);
-
-        try decoder.expectEnd(seq.slice.end);
-
-        return res;
-    }
-
-    fn decodeUid(decoder: *der.Decoder, tag: u16) !?asn1.BitString {
-        const expected_tag = ExpectedTag.init(@enumFromInt(tag), false, .context_specific);
-        const ele = decoder.element(expected_tag) catch return null;
-        return try asn1.BitString.fromDer(decoder.view(ele));
-    }
+    pub const asn1_implicit = .{
+        .version = asn1.FieldTag{ .number = 0 },
+        .issuer_uid = asn1.FieldTag{ .number = 1 },
+        .subject_uid = asn1.FieldTag{ .number = 2 },
+        .extensions = asn1.FieldTag{ .number = 3 },
+    };
 
     pub const Version = enum(u8) {
         v1 = 0,
         v2 = 1,
         v3 = 2,
         _,
-
-        pub fn decodeDer(decoder: *der.Decoder) !Version {
-            const expected_tag = ExpectedTag.init(@enumFromInt(0), true, .context_specific);
-            const seq = decoder.element(expected_tag) catch return .v1;
-            const res = try decoder.expect(u8);
-            try decoder.expectEnd(seq.slice.end);
-            return @enumFromInt(res);
-        }
     };
 
-    const SerialNumber = asn1.Opaque(.{ .number = .integer });
     const Name = asn1.Opaque(.{ .number = .sequence, .constructed = true });
 
     pub const Validity = struct {
@@ -154,12 +119,16 @@ pub const ToBeSigned = struct {
                 }
             }
 
-            pub fn encodeDer(self: DateTime, writer: anytype) !void {
+            pub fn encodeDer(self: DateTime, encoder: *der.Encoder) !void {
                 const date = self.date;
                 const time = self.time;
 
-                try der.Encoder.tagLength(writer, .{ .number = .generalized_time }, "yyyy-mm-ddTHH:mm:ssZ".len);
-                try writer.print("{d:0>4}{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}Z", .{ date.year, date.month.numeric(), date.day, time.hour, time.minute, time.second });
+                try encoder.tagLength(.{ .number = .utc_time }, "yymmddHHmmssZ".len);
+                const year: u16 = if (date.year > 2000) date.year - 2000 else date.year - 1900;
+                const args = .{ year, date.month.numeric(), date.day, time.hour, time.minute, time.second };
+                try encoder.writer.print("{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}Z", args);
+                // try der.Encoder.tagLength(writer, .{ .number = .generalized_time }, "yyyymmddHHmmssZ".len);
+                // try writer.print("{d:0>4}{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}Z", .{ date.year, date.month.numeric(), date.day, time.hour, time.minute, time.second });
             }
 
             fn parseTime(bytes: *const [6]u8) !Time {
@@ -208,126 +177,42 @@ pub const ToBeSigned = struct {
         };
     };
 
-    pub const PubKey = union(enum) {
-        rsa: []const u8,
-        ecdsa_p256: []const u8,
-        ecdsa_p384: []const u8,
-        ecdsa_secp256: []const u8,
-        ed25519: []const u8,
+    pub const PubKey = struct {
+        algorithm: Algorithm,
+        key: asn1.BitString,
 
-        pub fn decodeDer(decoder: *der.Decoder) !PubKey {
-            const seq = try decoder.sequence();
-            defer decoder.index = seq.slice.end;
-            const seq_algo = try decoder.sequence();
-            defer decoder.index = seq_algo.slice.end;
+        const Algorithm = struct {
+            tag: Tag.Enum,
+            parameters: ?AlgorithmIdentifier.Ecdsa.NamedCurve.Enum = null,
 
-            const tag = try decoder.expectEnum(Algo);
-            switch (tag) {
-                .rsa => {
-                    _ = try decoder.element(ExpectedTag.primitive(.null));
-                    const bitstring = try decoder.expect(asn1.BitString);
-                    if (bitstring.right_padding != 0) return error.InvalidKeyLength;
-
-                    return .{ .rsa = bitstring.bytes };
-                },
-                .ecdsa => {
-                    const curve = try decoder.expectEnum(SigAlgo.Ecdsa.NamedCurve);
-                    const bitstring = try decoder.expect(asn1.BitString);
-                    if (bitstring.right_padding != 0) return error.InvalidKeyLength;
-
-                    return switch (curve) {
-                        .prime256v1 => .{ .ecdsa_p256 = bitstring.bytes },
-                        .secp384r1 => .{ .ecdsa_p384 = bitstring.bytes },
-                        .secp521r1 => return error.CurveUnsupported,
-                        .secp256k1 => .{ .ecdsa_secp256 = bitstring.bytes },
-                    };
-                },
-                .ed25519 => {
-                    _ = try decoder.element(ExpectedTag.primitive(.null));
-                    const bitstring = try decoder.expect(asn1.BitString);
-                    if (bitstring.right_padding != 0) return error.InvalidKeyLength;
-
-                    return .{ .ed25519 = bitstring.bytes };
-                },
-            }
-        }
-
-        pub fn encodeDer(self: PubKey, writer: anytype) !void {
-            const info = KeyInfo{
-                .inner = .{
-                    .algo = .{
-                        .oid = switch (self) {
-                           .ecdsa_p256, .ecdsa_p384, .ecdsa_secp256 => Algo.oid(.ecdsa),
-                           .rsa => Algo.oid(.rsa),
-                           .ed25519 => Algo.oid(.ed25519),
-                        },
-                        .parameters = switch (self) {
-                            .rsa => .rsa,
-                            .ed25519 => .ed25519,
-                            .ecdsa_p256 => .{ .ecdsa = .secp256k1 },
-                            .ecdsa_p384 => .{ .ecdsa = .secp384r1 },
-                            .ecdsa_secp256 => .{ .ecdsa = .prime256v1 },
-                        },
-                    },
-                    .public_key = switch (self) {
-                        inline else => |v| asn1.BitString{ .bytes = v },
-                    }
-                },
-            };
-            try der.Encoder.encodeAny(info, writer);
-        }
-
-        const KeyInfo = struct {
-            inner: struct {
-                algo: struct {
-                    oid: asn1.Oid,
-                    parameters: union(enum) {
-                        rsa,
-                        ecdsa: SigAlgo.Ecdsa.NamedCurve.Enum,
-                        ed25519,
-
-                        pub fn encodeDer(self: @This(), writer: anytype) !void {
-                            switch (self) {
-                                .rsa, .ed25519 => try der.Encoder.tagLength(writer, .{ .number = .null }, 0),
-                                .ecdsa => |e|  try der.Encoder.encodeAny(SigAlgo.Ecdsa.NamedCurve.oid(e), writer),
-                            }
-                        }
-                    },
-                },
-                public_key: asn1.BitString,
-            },
+            const Tag = asn1.Oid.Enum(.{
+                .{ "1.2.840.113549.1.1.1", .rsa },
+                .{ "1.2.840.10045.2.1", .ecdsa },
+                .{ "1.3.101.112", .ed25519 },
+            });
         };
-
-        const Algo = asn1.Oid.Enum(.{
-            .{ "1.2.840.113549.1.1.1", .rsa },
-            .{ "1.2.840.10045.2.1", .ecdsa },
-            .{ "1.3.101.112", .ed25519 },
-        });
     };
 
     // This is a container to avoid allocating []Extension.
     // It contains only the extensions we care to parse and ignores the rest.
     pub const Extensions = struct {
-        subject_key_identifier: ?[]const u8 = null,
+        // subject_key_identifier: ?[]const u8 = null,
         key_usage: ?KeyUsage = null,
         basic_constraints: ?BasicConstraints = null,
         /// See `policiesIter`.
-        policies: ?[]const u8 = null,
+        // policies: ?[]const u8 = null,
         key_usage_ext: ?KeyUsageExt = null,
         /// See `subjectAliasesIter`.
-        subject_aliases: ?[]const u8 = null,
+        // subject_aliases: ?[]const u8 = null,
 
         pub fn decodeDer(decoder: *der.Decoder) !Extensions {
-            const expected_tag = ExpectedTag.init(@enumFromInt(3), true, .context_specific);
-            const ele = decoder.element(expected_tag) catch return .{};
-            const outer_seq = try decoder.sequence();
-            defer decoder.index = ele.slice.end;
+            const seq = try decoder.sequence();
 
             var res: Extensions = .{};
-            while (decoder.index < outer_seq.slice.end) {
+            while (decoder.index < seq.slice.end) {
                 const ext = try decoder.expect(Extension);
                 const doc_bytes = ext.value.bytes;
-                var doc_parser = der.Decoder{ .bytes = doc_bytes };
+                // var doc_parser = der.Decoder{ .bytes = doc_bytes };
                 if (Extension.Tag.oids.get(ext.tag.encoded)) |tag| {
                     switch (tag) {
                         .key_usage => {
@@ -336,21 +221,21 @@ pub const ToBeSigned = struct {
                         .key_usage_ext => {
                             res.key_usage_ext = try KeyUsageExt.fromDer(doc_bytes);
                         },
-                        .subject_alt_name => {
-                            const seq = try doc_parser.sequence();
-                            res.subject_aliases = doc_parser.view(seq);
-                        },
+                        // .subject_alt_name => {
+                        //     const seq = try doc_parser.sequence();
+                        //     res.subject_aliases = doc_parser.view(seq);
+                        // },
                         .basic_constraints => {
                             res.basic_constraints = try BasicConstraints.fromDer(doc_bytes);
                         },
-                        .subject_key_identifier => {
-                            const string = try doc_parser.element(ExpectedTag.primitive(.octetstring));
-                            res.subject_key_identifier = doc_parser.view(string);
-                        },
-                        .certificate_policies => {
-                            const seq = try doc_parser.sequence();
-                            res.policies = doc_parser.view(seq);
-                        },
+                        // .subject_key_identifier => {
+                        //     const string = try doc_parser.element(ExpectedTag.primitive(.octetstring));
+                        //     res.subject_key_identifier = doc_parser.view(string);
+                        // },
+                        // .certificate_policies => {
+                        //     const seq = try doc_parser.sequence();
+                        //     res.policies = doc_parser.view(seq);
+                        // },
                         else => {},
                     }
                 } else if (ext.critical) {
@@ -363,11 +248,6 @@ pub const ToBeSigned = struct {
                 }
             }
             return res;
-        }
-
-        pub fn encodeDer(self: Extensions, writer: anytype) !void {
-            _ = self;
-            _ = writer;
         }
 
         const Extension = struct {
@@ -429,8 +309,7 @@ pub const ToBeSigned = struct {
             encipher_only: bool = false,
             decipher_only: bool = false,
 
-            pub fn fromDer(bytes: []const u8) !KeyUsage {
-                var parser = der.Decoder{ .bytes = bytes };
+            pub fn decodeDer(parser: *der.Decoder) !KeyUsage {
                 const key_usage = try parser.expect(asn1.BitString);
                 if (key_usage.bitLen() > @bitSizeOf(KeyUsage)) return error.InvalidKeyUsage;
 
@@ -445,6 +324,17 @@ pub const ToBeSigned = struct {
                 );
 
                 return @bitCast(int);
+            }
+
+            pub fn encodeDer(self: KeyUsage, encoder: *der.Encoder) !void {
+                try encoder.tag(.{ .number = .sequence, .constructed = true });
+
+                try encoder.any(Extension.Tag.oid(.key_usage));
+                try encoder.any(true);
+
+                const bytes: []const u8 = std.mem.asBytes(&self);
+                try encoder.tag(.{ .number = .octetstring, .constructed = true });
+                try encoder.any(asn1.BitString{ .bytes = bytes });
             }
         };
 
@@ -466,13 +356,12 @@ pub const ToBeSigned = struct {
                 .{ "1.3.6.1.5.5.7.3.9", .ocsp_signing },
             });
 
-            pub fn fromDer(bytes: []const u8) !KeyUsageExt {
-                var res: KeyUsageExt = .{};
-
-                var parser = der.Decoder{ .bytes = bytes };
+            pub fn decodeDer(parser: *der.Decoder) !KeyUsageExt {
                 const seq = try parser.sequence();
                 defer parser.index = seq.slice.end;
-                while (parser.index != parser.bytes.len) {
+
+                var res: KeyUsageExt = .{};
+                while (parser.index < parser.bytes.len) {
                     const tag = parser.expectEnum(Tag) catch |err| switch (err) {
                         error.UnknownOid => continue,
                         else => return err,
@@ -514,58 +403,22 @@ pub const ToBeSigned = struct {
     };
 };
 
-pub const SigAlgo = union(enum) {
-    rsa_pkcs: HashTag.Enum,
-    rsa_pss: RsaPss,
-    ecdsa: Ecdsa,
-    ed25519: void,
+pub const AlgorithmIdentifier = struct {
+    algorithm: Algorithm,
+    params: ?asn1.Any = null,
 
-    pub const RsaPss = struct {
+    const MaskGen = struct {
+        tag: Tag.Enum,
         hash: HashTag.Enum,
-        mask_gen: MaskGen = .{ .tag = .mgf1, .hash = .sha256 },
-        salt_len: u8 = 32,
 
-        pub fn decodeDer(decoder: *der.Decoder) !RsaPss {
-            const body = try decoder.sequence();
-            defer decoder.index = body.slice.end;
-
-            const hash = brk: {
-                const seq = try decoder.sequence();
-                defer decoder.index = seq.slice.end;
-                const hash = try decoder.expectEnum(HashTag);
-                _ = try decoder.element(ExpectedTag.primitive(.null));
-                break :brk hash;
-            };
-
-            const mask_gen = try decoder.expect(MaskGen);
-            const salt_len = try decoder.expect(i8);
-            if (salt_len < 0) return error.InvalidSaltLength;
-
-            return .{ .hash = hash, .mask_gen = mask_gen, .salt_len = @bitCast(salt_len) };
-        }
-
-        const MaskGen = struct {
-            tag: Tag.Enum,
-            hash: HashTag.Enum,
-
-            pub fn decodeDer(decoder: *der.Decoder) !MaskGen {
-                const seq = try decoder.sequence();
-                defer decoder.index = seq.slice.end;
-
-                const tag = try decoder.expectEnum(Tag);
-                const hash = try decoder.expectEnum(HashTag);
-                return .{ .tag = tag, .hash = hash };
-            }
-
-            const Tag = asn1.Oid.Enum(.{
-                .{ "1.2.840.113549.1.1.8", .mgf1 },
-            });
-        };
+        const Tag = asn1.Oid.Enum(.{
+            .{ "1.2.840.113549.1.1.8", .mgf1 },
+        });
     };
 
     pub const Ecdsa = struct {
         hash: HashTag.Enum,
-        curve: ?NamedCurve.Enum,
+        curve: NamedCurve.Enum,
 
         pub const NamedCurve = asn1.Oid.Enum(.{
             .{ "1.2.840.10045.3.1.7", .prime256v1 },
@@ -583,56 +436,7 @@ pub const SigAlgo = union(enum) {
         .{ "2.16.840.1.101.3.4.2.4", .sha224 },
     });
 
-    pub fn decodeDer(decoder: *der.Decoder) !SigAlgo {
-        const seq = try decoder.sequence();
-        defer decoder.index = seq.slice.end;
-
-        const algo = try decoder.expectEnum(AlgoTag);
-        switch (algo) {
-            inline .rsa_pkcs_sha1,
-            .rsa_pkcs_sha224,
-            .rsa_pkcs_sha256,
-            .rsa_pkcs_sha384,
-            .rsa_pkcs_sha512,
-            => |t| {
-                _ = try decoder.element(ExpectedTag.primitive(.null));
-                const hash = std.meta.stringToEnum(HashTag.Enum, @tagName(t)["rsa_pkcs_".len..]).?;
-                return .{ .rsa_pkcs = hash };
-            },
-            .rsa_pss => return .{ .rsa_pss = try RsaPss.decodeDer(decoder) },
-            inline .ecdsa_sha224,
-            .ecdsa_sha256,
-            .ecdsa_sha384,
-            .ecdsa_sha512,
-            => |t| {
-                const curve = if (decoder.index != seq.slice.end) try decoder.expectEnum(Ecdsa.NamedCurve) else null;
-                return .{ .ecdsa = Ecdsa{
-                    .hash = std.meta.stringToEnum(HashTag.Enum, @tagName(t)["ecdsa_".len..]).?,
-                    .curve = curve,
-                } };
-            },
-            .ed25519 => return .{ .ed25519 = {} },
-        }
-    }
-
-    pub fn encodeDer(self: SigAlgo, writer: anytype) !void {
-        switch (self) {
-            .rsa_pkcs => |info| {
-                _ = info;
-            },
-            .rsa_pss => |info| {
-                _ = info;
-            },
-            .ecdsa => |info| {
-                _ = info;
-            },
-            .ed25519 => {
-                try der.encode(AlgoTag.oid(.ed25519), writer);
-            },
-        }
-    }
-
-    const AlgoTag =  asn1.Oid.Enum(.{
+    const Algorithm =  asn1.Oid.Enum(.{
         .{ "1.2.840.113549.1.1.5", .rsa_pkcs_sha1 },
         .{ "1.2.840.113549.1.1.10", .rsa_pss },
         .{ "1.2.840.113549.1.1.11", .rsa_pkcs_sha256 },
@@ -650,6 +454,7 @@ pub const SigAlgo = union(enum) {
 const std = @import("std");
 const asn1 = @import("./asn1.zig");
 const der = asn1.der;
+const Asn1Tag = asn1.encodings.Tag;
 const ExpectedTag = asn1.encodings.ExpectedTag;
 const expectEqual = std.testing.expectEqual;
 const expectError = std.testing.expectError;

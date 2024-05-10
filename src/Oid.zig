@@ -107,14 +107,17 @@ const test_cases = [_]TestCase{
     TestCase.init("2b6570", "1.3.101.112"),
 };
 
+const asn1_tag = encodings.Tag.init(.oid, false, .universal);
+
 pub fn decodeDer(decoder: *der.Decoder) !Oid {
-    const ele = try decoder.element(encodings.ExpectedTag.init(.oid, false, .universal));
+    const ele = try decoder.element(asn1_tag.toExpected());
     return Oid{ .encoded = decoder.view(ele) };
 }
 
-pub fn encodeDer(self: Oid, writer: anytype) !void {
-    try der.Encoder.tagLength(writer, .{ .number = .oid }, self.encoded.len);
-    try writer.writeAll(self.encoded);
+pub fn encodeDer(self: Oid, encoder: *der.Encoder) !void {
+    try encoder.tag(asn1_tag);
+    try encoder.length(self.encoded.len);
+    try encoder.writer().writeAll(self.encoded);
 }
 
 fn encodedLen(dot_notation: []const u8) usize {
