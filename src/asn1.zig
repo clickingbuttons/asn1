@@ -102,6 +102,22 @@ pub fn Slice(comptime tag: encodings.Tag, comptime T: type, arr_len: comptime_in
     };
 }
 
+pub const Any = struct {
+    tag: encodings.Tag,
+    bytes: []const u8,
+
+    pub fn decodeDer(decoder: *der.Decoder) !@This() {
+        const ele = try decoder.element(encodings.ExpectedTag{});
+        return .{ .tag = ele.tag, .bytes = decoder.view(ele) };
+    }
+
+    pub fn encodeDer(self: @This(), encoder: *der.Encoder) !void {
+        try encoder.tag(self.tag);
+        try encoder.length(self.bytes.len);
+        try encoder.writer().writeAll(self.bytes);
+    }
+};
+
 test {
     _ = der;
     _ = Oid;

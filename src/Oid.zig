@@ -107,7 +107,7 @@ const test_cases = [_]TestCase{
     TestCase.init("2b6570", "1.3.101.112"),
 };
 
-const asn1_tag = encodings.Tag.init(.oid, false, .universal);
+pub const asn1_tag = encodings.Tag.init(.oid, false, .universal);
 
 pub fn decodeDer(decoder: *der.Decoder) !Oid {
     const ele = try decoder.element(asn1_tag.toExpected());

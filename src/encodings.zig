@@ -1,4 +1,5 @@
 const std = @import("std");
+const Oid = @import("./Oid.zig");
 
 pub const Element = struct {
     tag: Tag,
@@ -185,7 +186,10 @@ pub const Tag = struct {
             .Union => return .{ .number = .sequence_of, .constructed = true },
             .Bool => return .{ .number = .boolean },
             .Int => return .{ .number = .integer },
-            .Enum => |e| return .{ .number = if (e.is_exhaustive) .enumerated else .integer },
+            .Enum => |e| {
+                if (@hasDecl(T, "oids")) return Oid.asn1_tag;
+                return .{ .number = if (e.is_exhaustive) .enumerated else .integer };
+            },
             .Optional => |o| return fromZig(o.child),
             .Null => return .{ .number = .null },
             else => @compileError("cannot encode Zig type " ++ @typeName(T)),
@@ -239,6 +243,7 @@ pub const ExpectedTag = struct {
 
 pub const FieldTag = struct {
     number: std.meta.Tag(Tag.Number),
+    constructed: ?bool = null,
     class: Tag.Class,
     explicit: bool = true,
 

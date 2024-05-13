@@ -4,7 +4,7 @@ signature: asn1.BitString,
 
 pub const ToBeSigned = struct {
     version: Version = .v1,
-    serial_number: asn1.Opaque(.{ .number = .integer }),
+    serial_number: SerialNumber,
     signature_algo: AlgorithmIdentifier,
     issuer: Name,
     validity: Validity,
@@ -13,7 +13,7 @@ pub const ToBeSigned = struct {
 
     issuer_uid: ?asn1.BitString = null,
     subject_uid: ?asn1.BitString = null,
-    extensions: asn1.Slice(.{ .number = .sequence, .constructed = true }, Extension, max_extensions) = .{},
+    extensions: asn1.Slice(sequence_tag, Extension, max_extensions),
 
     pub const asn1_tags = .{
         .version = FieldTag.explicit(0, .context_specific),
@@ -32,6 +32,12 @@ pub const ToBeSigned = struct {
         v3 = 2,
         _,
     };
+
+    const OctectString = asn1.Opaque(Asn1Tag.init(.octetstring, false, .universal));
+    const sequence_tag = Asn1Tag.init(.sequence, true, .universal);
+    const Sequence = asn1.Opaque(sequence_tag);
+    const SerialNumber = asn1.Opaque(.{ .number = .integer });
+    const KeyIdentifier = OctectString;
 
     const Name = asn1.Opaque(.{ .number = .sequence, .constructed = true });
 
@@ -227,170 +233,126 @@ pub const ToBeSigned = struct {
 
             pub fn encodeDer(self: Algorithm, encoder: *der.Encoder) !void {
                 switch (self) {
-                    .rsa => {
-                        try encoder.any(.{ Tag.rsa, null });
-                    },
-                    .ecdsa => |curve| {
-                        try encoder.any(.{ Tag.ecdsa, .{NamedCurve.oids.enumToOid(curve)} });
-                    },
-                    .ed25519 => {
-                        try encoder.any(.{ Tag.ed25519, null });
-                    },
+                    .rsa => try encoder.any(.{ Tag.rsa, null }),
+                    .ecdsa => |curve| try encoder.any(.{ Tag.ecdsa, curve }),
+                    .ed25519 => try encoder.any(.{ Tag.ed25519, null }),
                 }
             }
         };
     };
 
-        pub const Extension = struct {
-            tag: asn1.Oid,
-            critical: bool = false,
-            value: asn1.Opaque(.{ .number = .octetstring }),
+    pub const Extension = union(UnionTag) {
+        key_usage: Known(KeyUsage),
+        certificate_policies: Known(Sequence),
+        subject_alt_name: Known(Sequence),
+        basic_constraints: Known(BasicConstraints),
+        key_usage_ext: Known(asn1.Slice(sequence_tag, KeyUsageExt, std.meta.tags(KeyUsageExt).len)),
+        unknown: Unknown,
 
-            // .{ "2.5.29.1", .authority_key_identifier }, // deprecated
-            // .{ "2.5.29.25", .crl_distribution_points }, // deprecated
-            const Tag = enum {
-                /// Fingerprint to identify public key.
-                subject_key_identifier,
-                /// Purpose of key (see `KeyUsage`).
-                key_usage,
-                /// Alternative names besides specified `subject`. Usually DNS entries.
-                subject_alt_name,
-                /// Alternative names besides specified `issuer`.
-                /// S4.2.1.7 states: Issuer alternative names are not
-                /// processed as part of the certification path validation algorithm in
-                /// Section 6.
-                issuer_alt_name,
-                /// Identify if is CA and maximum depth of valid cert paths including this cert.
-                basic_constraints,
-                /// Nationality of subject
-                subject_directory_attributes,
-                /// For CA certificates, indicates a name space within which all subject names in
-                /// subsequent certificates in a certification path MUST be located.
-                name_constraints,
-                /// Where to find Certificate Revocation List.
-                crl_distribution_points,
-                /// Policies that cert was issued under (domain verification, etc.).
-                certificate_policies,
-                /// Map of issuing CA policy considered equivalent to subject policy.
-                policy_mappings,
-                /// For CA certificates, can be used to prohibit policy mapping or require
-                /// that each certificate in a path contain an acceptable policy
-                /// identifier.
-                policy_constraints,
-                /// Fingerprint to identify CA's public key.
-                authority_key_identifier,
-                /// Purpose of key (see `KeyUsageExt`).
-                key_usage_ext,
-                /// For CA certificates, indicates that the special anyPolicy OID is NOT
-                /// considered an explicit match for other certificate policies.
-                inhibit_anypolicy,
+        pub fn decodeDer(decoder: *der.Decoder) !Extension {
+            const start = decoder.index;
+            const ext = try decoder.expect(Unknown);
 
-                pub const oids = asn1.Oid.StaticMap(@This()).initComptime(.{
-                    .subject_key_identifier = "2.5.29.14",
-                    .key_usage = "2.5.29.15",
-                    .subject_alt_name = "2.5.29.17",
-                    .issuer_alt_name = "2.5.29.18",
-                    .basic_constraints = "2.5.29.19",
-                    .subject_directory_attributes = "2.5.29.29",
-                    .name_constraints = "2.5.29.30",
-                    .crl_distribution_points = "2.5.29.31",
-                    .certificate_policies = "2.5.29.32",
-                    .policy_mappings = "2.5.29.33",
-                    .policy_constraints = "2.5.29.34",
-                    .authority_key_identifier = "2.5.29.35",
-                    .key_usage_ext = "2.5.29.37",
-                    .inhibit_anypolicy = "2.5.29.54",
-                });
-            };
-        };
-
-    // pub const Extension = union(enum) {
-    //     // subject_key_identifier: ?[]const u8 = null,
-    //     key_usage: KeyUsage,
-    //     basic_constraints: BasicConstraints,
-    //     /// See `policiesIter`.
-    //     policies: asn1.Opaque(Asn1Tag.init(.sequence, true, .universal)),
-    //     key_usage_ext: KeyUsageExt,
-    //     /// See `subjectAliasesIter`.
-    //     subject_aliases: asn1.Opaque(Asn1Tag.init(.sequence, true, .universal)),
-    //     empty,
-
-    //     pub fn decodeDer(decoder: *der.Decoder) !Extension {
-    //         const ext = try decoder.expect(Extension);
-    //         const doc_bytes = ext.value.bytes;
-    //         var doc_decoder = der.Decoder{ .bytes = doc_bytes };
-
-    //         if (Extension.Tag.oids.oidToEnum(ext.tag.encoded)) |tag| {
-    //             switch (tag) {
-    //                 .key_usage => {
-    //                     return .{ .key_usage = try KeyUsage.decodeDer(&doc_decoder) };
-    //                 },
-    //                 .key_usage_ext => {
-    //                     return .{ .key_usage_ext = try KeyUsageExt.decodeDer(&doc_decoder) };
-    //                 },
-    //                 .subject_alt_name => {
-    //                     const seq2 = try doc_decoder.sequence();
-    //                     return .{ .subject_aliases = .{ .bytes = doc_decoder.view(seq2) } };
-    //                 },
-    //                 .basic_constraints => {
-    //                     return .{ .basic_constraints = try doc_decoder.expect(BasicConstraints) };
-    //                 },
-    //                 // .subject_key_identifier => {
-    //                 //     const string = try doc_decoder.element(ExpectedTag.primitive(.octetstring));
-    //                 //     res.subject_key_identifier = doc_decoder.view(string);
-    //                 // },
-    //                 .certificate_policies => {
-    //                     const seq2 = try doc_decoder.sequence();
-    //                     return .{ .policies = .{ .bytes = doc_decoder.view(seq2) } };
-    //                 },
-    //                 else => {},
-    //             }
-    //         }
-    //         if (ext.critical) {
-    //             var buffer: [256]u8 = undefined;
-    //             var stream = std.io.fixedBufferStream(&buffer);
-    //             ext.tag.toDot(stream.writer()) catch {};
-
-    //             log.err("critical unknown extension {s}", .{stream.getWritten()});
-    //             return error.UnimplementedCriticalExtension;
-    //         }
-    //     }
-
-    // };
-
-    pub const Extensions = struct {
-        pub fn encodeDer(self: Extensions, encoder: *der.Encoder) !void {
-            _ = .{ self, encoder };
-            // const n_fields = @typeInfo(Extensions).Struct.fields.len;
-            // const exts: [n_fields]Extension = undefined;
-            // var n_exts: usize = 0;
-
-            // var buffer: [1024]u8 = undefined;
-            // var stream = std.io.fixedBufferStream(&buffer);
-            // var encoder2 = der.Encoder.init(stream.writer().any());
-
-            // if (self.key_usage) |key_usage| {
-            //     try key_usage.encodeDer(&encoder2);
-            //     exts[n_exts] = Extension{
-            //         .tag = Extension.Tag.oids.enumToOid(.key_usage),
-            //         .critical = true,
-            //         .value = .{ .bytes = stream.getWritten() }
-            //     };
-            //     n_exts += 1;
-            // }
-            // if (self.basic_constraints) |basic_constraints| {
-            //     try stream.reset();
-            //     try encoder2.any(basic_constraints);
-            //     exts[n_exts] = Extension{
-            //         .tag = Extension.Tag.oids.enumToOid(.basic_constraints),
-            //         .critical = true,
-            //         .value = .{ .bytes = stream.getWritten() }
-            //     };
-            //     n_exts += 1;
-            // }
-            // try encoder.any(exts[0..n_exts]);
+            if (Tag.oids.oidToEnum(ext.tag.encoded)) |tag| {
+                switch (tag) {
+                    inline else => |t| {
+                        const this_tag = comptime std.meta.stringToEnum(UnionTag, @tagName(t)).?;
+                        const T = std.meta.TagPayload(Extension, this_tag);
+                        // Reparse, this time expecting the known type.
+                        decoder.index = start;
+                        const value = try decoder.expect(T);
+                        return @unionInit(Extension, @tagName(t), value);
+                    },
+                }
+            }
+            try ext.expectNotCritical();
+            return .{ .unknown = ext };
         }
 
+        pub fn encodeDer(self: @This(), encoder: *der.Encoder) !void {
+            switch (self) {
+                inline else => |v| try encoder.any(v),
+            }
+        }
+
+        const Tag = enum {
+            // Parts of RFC 5280 4.2.1 relevant to TLS certificate validation.
+            key_usage,
+            certificate_policies,
+            subject_alt_name,
+            basic_constraints,
+            key_usage_ext,
+
+            pub const oids = asn1.Oid.StaticMap(@This()).initComptime(.{
+                .key_usage = "2.5.29.15",
+                .certificate_policies = "2.5.29.32",
+                .subject_alt_name = "2.5.29.17",
+                .basic_constraints = "2.5.29.19",
+                .key_usage_ext = "2.5.29.37",
+            });
+        };
+
+        /// Type that forces keeping this union up-to-date with `Tag`.
+        pub const UnionTag = brk: {
+            const info = @typeInfo(Tag).Enum;
+            const fields = info.fields ++ &[_]std.builtin.Type.EnumField{
+                .{ .name = "unknown", .value = info.fields.len },
+            };
+            break :brk @Type(.{ .Enum = .{
+                .tag_type = info.tag_type,
+                .fields = fields,
+                .decls = &.{},
+                .is_exhaustive = true,
+            }});
+        };
+
+        fn Known(comptime T: type) type {
+            return struct {
+                tag: Tag,
+                critical: bool = false,
+                value: T,
+
+                // This isn't really the ASN1 tag.
+                // It's a nice way to encode `value` into an octect string while using
+                // the existing length counting code.
+                pub const asn1_tags = .{
+                    .value = FieldTag{
+                        .number = @intFromEnum(Asn1Tag.Number.octetstring),
+                        .constructed = false,
+                        .class = .universal,
+                    },
+                };
+            };
+        }
+
+        pub const Unknown = struct {
+            tag: asn1.Oid,
+            critical: bool = false,
+            value: asn1.Any,
+
+            fn expectNotCritical(self: Unknown) !void {
+                if (self.critical) {
+                    var buffer: [256]u8 = undefined;
+                    var stream = std.io.fixedBufferStream(&buffer);
+                    self.tag.toDot(stream.writer()) catch {};
+
+                    log.err("critical unknown extension {s}", .{stream.getWritten()});
+                    return error.UnimplementedCriticalExtension;
+                }
+            }
+        };
+
+        pub const AuthorityKeyIdentifier = struct {
+            key_identifier: ?KeyIdentifier = null,
+            authority_cert_issuer: ?Sequence = null,
+            authority_cert_serial_number: ?SerialNumber = null,
+
+            pub const asn1_tags = .{
+                .key_identifier = FieldTag.implicit(0, .context_specific),
+                .authority_cert_issuer = FieldTag.implicit(1, .context_specific),
+                .authority_cert_serial_number = FieldTag.implicit(2, .context_specific),
+            };
+        };
 
         /// How `subject_pub_key` may be used.
         pub const KeyUsage = packed struct {
@@ -427,54 +389,22 @@ pub const ToBeSigned = struct {
         };
 
         /// Further specifies how `subject_pub_key` may be used.
-        pub const KeyUsageExt = packed struct {
-            server_auth: bool = false,
-            client_auth: bool = false,
-            code_signing: bool = false,
-            email_protection: bool = false,
-            time_stamping: bool = false,
-            ocsp_signing: bool = false,
+        pub const KeyUsageExt = enum {
+            server_auth,
+            client_auth,
+            code_signing,
+            email_protection,
+            time_stamping,
+            ocsp_signing,
 
-            pub const Tag = enum {
-                server_auth,
-                client_auth,
-                code_signing,
-                email_protection,
-                time_stamping,
-                ocsp_signing,
-
-                pub const oids = asn1.Oid.StaticMap(@This()).initComptime(.{
-                    .server_auth = "1.3.6.1.5.5.7.3.1",
-                    .client_auth = "1.3.6.1.5.5.7.3.2",
-                    .code_signing = "1.3.6.1.5.5.7.3.3",
-                    .email_protection = "1.3.6.1.5.5.7.3.4",
-                    .time_stamping = "1.3.6.1.5.5.7.3.8",
-                    .ocsp_signing = "1.3.6.1.5.5.7.3.9",
-                });
-            };
-
-            pub fn decodeDer(decoder: *der.Decoder) !KeyUsageExt {
-                const seq = try decoder.sequence();
-                defer decoder.index = seq.slice.end;
-
-                var res: KeyUsageExt = .{};
-                while (decoder.index < decoder.bytes.len) {
-                    const tag = decoder.expectEnum(Tag) catch |err| switch (err) {
-                        error.UnknownOid => continue,
-                        else => return err,
-                    };
-                    switch (tag) {
-                        inline else => |t| @field(res, @tagName(t)) = true,
-                    }
-                }
-
-                return res;
-            }
-
-            pub fn encodeDer(self: KeyUsageExt, encoder: *der.Encoder) !void {
-                const T = asn1.Opaque(Asn1Tag.init(.sequence, true, .universal));
-                try encoder.any(.{T{ .bytes = std.mem.asBytes(&self) }});
-            }
+            pub const oids = asn1.Oid.StaticMap(@This()).initComptime(.{
+                .server_auth = "1.3.6.1.5.5.7.3.1",
+                .client_auth = "1.3.6.1.5.5.7.3.2",
+                .code_signing = "1.3.6.1.5.5.7.3.3",
+                .email_protection = "1.3.6.1.5.5.7.3.4",
+                .time_stamping = "1.3.6.1.5.5.7.3.8",
+                .ocsp_signing = "1.3.6.1.5.5.7.3.9",
+            });
         };
 
         /// Extension specifying if certificate is a CA and maximum number
@@ -511,13 +441,15 @@ pub const AlgorithmIdentifier = union(enum) {
         };
 
         const MaskGen = struct {
-            tag: Tag,
+            tag: MaskGen.Tag,
             hash: Hash,
 
             const Tag = enum {
                 mgf1,
 
-                pub const oids = asn1.Oid.StaticMap(@This()).initComptime(.{ .mgf1 = "1.2.840.113549.1.1.8", });
+                pub const oids = asn1.Oid.StaticMap(@This()).initComptime(.{
+                    .mgf1 = "1.2.840.113549.1.1.8",
+                });
             };
         };
     };
@@ -545,7 +477,7 @@ pub const AlgorithmIdentifier = union(enum) {
         const seq = try decoder.sequence();
         defer decoder.index = seq.slice.end;
 
-        const algo = try decoder.expectEnum(Algorithm);
+        const algo = try decoder.expectEnum(Tag);
         switch (algo) {
             inline .rsa_pkcs_sha1,
             .rsa_pkcs_sha224,
@@ -576,31 +508,24 @@ pub const AlgorithmIdentifier = union(enum) {
     pub fn encodeDer(self: AlgorithmIdentifier, encoder: *der.Encoder) !void {
         switch (self) {
             .rsa_pkcs => |info| {
-                const algo: Algorithm = switch (info) {
-                    .sha1 => .rsa_pkcs_sha1,
-                    .sha256 => .rsa_pkcs_sha256,
-                    .sha384 => .rsa_pkcs_sha384,
-                    .sha512 => .rsa_pkcs_sha512,
-                    .sha224 => .rsa_pkcs_sha224,
+                const algo = switch (info) {
+                    inline else => |t| std.meta.stringToEnum(Tag, "rsa_pkcs_" ++ @tagName(t)).?,
                 };
                 try encoder.any(.{ algo, null });
             },
-            .rsa_pss => |info| try encoder.any(.{ Algorithm.rsa_pss, info }),
+            .rsa_pss => |info| try encoder.any(.{ Tag.rsa_pss, info }),
             .ecdsa => |info| {
-                const algo: Algorithm = switch (info.hash) {
-                    .sha256 => .ecdsa_sha256,
-                    .sha384 => .ecdsa_sha384,
-                    .sha512 => .ecdsa_sha512,
-                    .sha224 => .ecdsa_sha224,
-                    else => unreachable,
+                const algo = switch (info.hash) {
+                    .sha1 => unreachable,
+                    inline else => |t| std.meta.stringToEnum(Tag, "ecdsa_" ++ @tagName(t)).?,
                 };
-                try encoder.any(.{algo, info});
+                try encoder.any(.{ algo, info.curve });
             },
-            .ed25519 => try encoder.any(.{Algorithm.ed25519}),
+            .ed25519 => try encoder.any(.{Tag.ed25519}),
         }
     }
 
-    const Algorithm = enum {
+    const Tag = enum {
         rsa_pkcs_sha1,
         rsa_pkcs_sha256,
         rsa_pkcs_sha384,

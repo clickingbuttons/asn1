@@ -14,6 +14,7 @@ const AllTypes = struct {
     e: asn1.Opaque(.{ .number = .octetstring }),
     f: ?u16,
     g: ?Nested,
+    h: asn1.Slice(.{ .number = .sequence, .constructed = true }, C, 2),
 
     pub const asn1_tags = .{
         .a = FieldTag.explicit(0, .context_specific),
@@ -71,6 +72,7 @@ test AllTypes {
             .b = 5,
             .sum = 9,
         },
+        .h = .{ .len = 2, .items = [_]AllTypes.C{ .a, .b } },
     };
     const path = "./der/testdata/all_types.der";
     const encoded = @embedFile(path);
@@ -89,19 +91,24 @@ test AllTypes {
     // try file.writeAll(stream.getWritten());
 }
 
-test Certificate {
-    const encoded = @embedFile("./der/testdata/cert_rsa2048.der");
+fn testCertificate(comptime path: []const u8)  !void {
+    const encoded = @embedFile(path);
     const cert = try asn1.der.decode(Certificate, encoded);
-    std.debug.print("cert {any}\n", .{cert.tbs.extensions.slice()});
 
     var buf: [4096]u8 = undefined;
     var stream = std.io.fixedBufferStream(&buf);
     try asn1.der.encode(cert, stream.writer());
 
-    const dir = try std.fs.cwd().openDir("src", .{});
-    var file = try dir.createFile("./der/testdata/cert_rsa2048_mine.der", .{});
-    defer file.close();
-    try file.writeAll(stream.getWritten());
+    // Debug files can be used with another DER parser.
+    // const dir = try std.fs.cwd().openDir("src", .{});
+    // var file = try dir.createFile(path ++ ".debug", .{});
+    // defer file.close();
+    // try file.writeAll(stream.getWritten());
 
     try std.testing.expectEqualSlices(u8, encoded, stream.getWritten());
+}
+
+test Certificate {
+    try testCertificate("./der/testdata/cert_rsa2048.der");
+    try testCertificate("./der/testdata/cert_ecc256.der");
 }

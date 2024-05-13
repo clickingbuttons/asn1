@@ -24,7 +24,7 @@ pub fn expect(self: *Decoder, comptime T: type) !T {
 
                 if (self.field_tag) |ft| {
                     if (ft.explicit) {
-                        const expected = Tag.init(undefined, true, undefined).toExpected();
+                        const expected = Tag.init(undefined, ft.constructed orelse true, undefined).toExpected();
                         const seq = try self.element(expected);
                         self.index = seq.slice.start;
                         self.field_tag = null;
@@ -73,17 +73,6 @@ pub fn expect(self: *Decoder, comptime T: type) !T {
             return @enumFromInt(try int(e.tag_type, bytes));
         },
         .Optional => |o| return self.expect(o.child) catch return null,
-        .Array => |a| {
-            var res: T = undefined;
-            const ele = try self.element(tag);
-            var i: usize = 0;
-            while (self.index < ele.slice.end) : (i += 1) {
-                if (a.len < i) return error.ArrayTooSmall;
-
-                res[i] = try self.expect(a.child);
-            }
-            return res;
-        },
         else => @compileError("cannot decode type " ++ @typeName(T)),
     }
 }
@@ -140,11 +129,12 @@ pub fn element(self: *Decoder, expected: ExpectedTag) !Element {
     var e = expected;
     if (self.field_tag) |ft| {
         e.number = @enumFromInt(ft.number);
+        if (ft.constructed) |v| e.constructed = v;
         e.class = ft.class;
     }
     if (!e.equal(res.tag)) {
-        std.debug.print("expected {}\n", .{ e });
-        std.debug.print("got {}\n", .{ res });
+        // std.debug.print("expected {}\n", .{e});
+        // std.debug.print("got {}\n", .{res});
         return error.UnexpectedElement;
     }
 
