@@ -13,7 +13,7 @@ pub const ToBeSigned = struct {
 
     issuer_uid: ?asn1.BitString = null,
     subject_uid: ?asn1.BitString = null,
-    extensions: asn1.Slice(sequence_tag, Extension, max_extensions),
+    extensions: asn1.List(sequence_tag, Extension, max_extensions),
 
     pub const asn1_tags = .{
         .version = FieldTag.explicit(0, .context_specific),
@@ -26,7 +26,7 @@ pub const ToBeSigned = struct {
     /// There are 15 specified in RFC 5280 and vendors may add their own.
     const max_extensions = 16;
 
-    pub const Version = enum(u8) {
+    const Version = enum(u8) {
         v1 = 0,
         v2 = 1,
         v3 = 2,
@@ -41,15 +41,15 @@ pub const ToBeSigned = struct {
 
     const Name = asn1.Opaque(.{ .number = .sequence, .constructed = true });
 
-    pub const Validity = struct {
+    const Validity = struct {
         not_before: DateTime,
         not_after: DateTime,
 
-        pub const DateTime = struct {
+        const DateTime = struct {
             date: Date,
             time: Time,
 
-            pub fn init(
+            fn init(
                 year: Date.Year,
                 month: Date.Month,
                 day: Date.Day,
@@ -60,21 +60,21 @@ pub const ToBeSigned = struct {
                 return .{ .date = Date.init(year, month, day), .time = Time.init(hour, minute, second) };
             }
 
-            pub const Date = struct {
+            const Date = struct {
                 year: Year,
                 month: Month,
                 day: Day,
 
-                pub const Year = u16;
-                pub const Month = std.time.epoch.Month;
-                pub const Day = std.math.IntFittingRange(1, 31);
+                const Year = u16;
+                const Month = std.time.epoch.Month;
+                const Day = std.math.IntFittingRange(1, 31);
 
                 pub fn init(year: Year, month: Month, day: Day) Date {
                     return .{ .year = year, .month = month, .day = day };
                 }
             };
 
-            pub const Time = struct {
+            const Time = struct {
                 hour: Hour,
                 minute: Minute,
                 second: Second,
@@ -83,7 +83,7 @@ pub const ToBeSigned = struct {
                 const Minute = std.math.IntFittingRange(0, 59);
                 const Second = std.math.IntFittingRange(0, 60);
 
-                pub const DaySeconds = std.math.IntFittingRange(0, std.time.epoch.secs_per_day + 1);
+                const DaySeconds = std.math.IntFittingRange(0, std.time.epoch.secs_per_day + 1);
 
                 pub fn init(hour: Hour, minute: Minute, second: Second) Time {
                     return .{ .hour = hour, .minute = minute, .second = second };
@@ -188,7 +188,7 @@ pub const ToBeSigned = struct {
         };
     };
 
-    pub const PubKey = struct {
+    const PubKey = struct {
         algorithm: Algorithm,
         key: asn1.BitString,
 
@@ -214,14 +214,14 @@ pub const ToBeSigned = struct {
             pub fn decodeDer(decoder: *der.Decoder) !Algorithm {
                 const seq = try decoder.sequence();
                 defer decoder.index = seq.slice.end;
-                const tag = try decoder.expectEnum(Tag);
+                const tag = try decoder.any(Tag);
                 switch (tag) {
                     .rsa => {
                         _ = try decoder.element(ExpectedTag.primitive(.null));
                         return .rsa;
                     },
                     .ecdsa => {
-                        const curve = try decoder.expectEnum(NamedCurve);
+                        const curve = try decoder.any(NamedCurve);
                         return .{ .ecdsa = curve };
                     },
                     .ed25519 => {
@@ -241,26 +241,29 @@ pub const ToBeSigned = struct {
         };
     };
 
-    pub const Extension = union(UnionTag) {
+    const Extension = union(enum) {
         key_usage: Known(KeyUsage),
         certificate_policies: Known(Sequence),
         subject_alt_name: Known(Sequence),
         basic_constraints: Known(BasicConstraints),
-        key_usage_ext: Known(asn1.Slice(sequence_tag, KeyUsageExt, std.meta.tags(KeyUsageExt).len)),
+        key_usage_ext: Known(asn1.List(sequence_tag, KeyUsageExt, std.meta.tags(KeyUsageExt).len)),
         unknown: Unknown,
 
         pub fn decodeDer(decoder: *der.Decoder) !Extension {
             const start = decoder.index;
-            const ext = try decoder.expect(Unknown);
+            const ext = try decoder.any(Unknown);
 
             if (Tag.oids.oidToEnum(ext.tag.encoded)) |tag| {
                 switch (tag) {
                     inline else => |t| {
-                        const this_tag = comptime std.meta.stringToEnum(UnionTag, @tagName(t)).?;
+                        const this_tag = comptime std.meta.stringToEnum(
+                            std.meta.Tag(Extension),
+                            @tagName(t),
+                        ).?;
                         const T = std.meta.TagPayload(Extension, this_tag);
                         // Reparse, this time expecting the known type.
                         decoder.index = start;
-                        const value = try decoder.expect(T);
+                        const value = try decoder.any(T);
                         return @unionInit(Extension, @tagName(t), value);
                     },
                 }
@@ -290,20 +293,14 @@ pub const ToBeSigned = struct {
                 .basic_constraints = "2.5.29.19",
                 .key_usage_ext = "2.5.29.37",
             });
-        };
 
-        /// Type that forces keeping this union up-to-date with `Tag`.
-        pub const UnionTag = brk: {
-            const info = @typeInfo(Tag).Enum;
-            const fields = info.fields ++ &[_]std.builtin.Type.EnumField{
-                .{ .name = "unknown", .value = info.fields.len },
-            };
-            break :brk @Type(.{ .Enum = .{
-                .tag_type = info.tag_type,
-                .fields = fields,
-                .decls = &.{},
-                .is_exhaustive = true,
-            }});
+            comptime {
+                for (std.meta.tags(Tag)) |t| {
+                    if (!@hasField(Extension, @tagName(t))) {
+                        @compileError("Add '" ++ @tagName(t) ++ "' to Extension");
+                    }
+                }
+            }
         };
 
         fn Known(comptime T: type) type {
@@ -313,8 +310,8 @@ pub const ToBeSigned = struct {
                 value: T,
 
                 // This isn't really the ASN1 tag.
-                // It's a nice way to encode `value` into an octect string while using
-                // the existing length counting code.
+                // It's a nice way to wrap `value` in an octect string while using
+                // the existing encoder length counter.
                 pub const asn1_tags = .{
                     .value = FieldTag{
                         .number = @intFromEnum(Asn1Tag.Number.octetstring),
@@ -325,7 +322,7 @@ pub const ToBeSigned = struct {
             };
         }
 
-        pub const Unknown = struct {
+        const Unknown = struct {
             tag: asn1.Oid,
             critical: bool = false,
             value: asn1.Any,
@@ -342,20 +339,8 @@ pub const ToBeSigned = struct {
             }
         };
 
-        pub const AuthorityKeyIdentifier = struct {
-            key_identifier: ?KeyIdentifier = null,
-            authority_cert_issuer: ?Sequence = null,
-            authority_cert_serial_number: ?SerialNumber = null,
-
-            pub const asn1_tags = .{
-                .key_identifier = FieldTag.implicit(0, .context_specific),
-                .authority_cert_issuer = FieldTag.implicit(1, .context_specific),
-                .authority_cert_serial_number = FieldTag.implicit(2, .context_specific),
-            };
-        };
-
         /// How `subject_pub_key` may be used.
-        pub const KeyUsage = packed struct {
+        const KeyUsage = packed struct {
             encipher_only: bool = false,
             crl_sign: bool = false,
             key_cert_sign: bool = false,
@@ -372,7 +357,7 @@ pub const ToBeSigned = struct {
             const T = std.meta.Int(.unsigned, @sizeOf(KeyUsage) * 8);
 
             pub fn decodeDer(decoder: *der.Decoder) !KeyUsage {
-                const key_usage = try decoder.expect(asn1.BitString);
+                const key_usage = try decoder.any(asn1.BitString);
                 if (key_usage.bitLen() > @bitSizeOf(KeyUsage)) return error.InvalidKeyUsage;
 
                 const int = std.mem.readVarInt(Backing, key_usage.bytes, .big);
@@ -420,7 +405,7 @@ pub const ToBeSigned = struct {
     };
 };
 
-pub const AlgorithmIdentifier = union(enum) {
+const AlgorithmIdentifier = union(enum) {
     rsa_pkcs: Hash,
     rsa_pss: RsaPss,
     ecdsa: Ecdsa,
@@ -454,7 +439,7 @@ pub const AlgorithmIdentifier = union(enum) {
         };
     };
 
-    pub const Ecdsa = struct {
+    const Ecdsa = struct {
         hash: Hash,
         curve: NamedCurve,
 
@@ -477,7 +462,7 @@ pub const AlgorithmIdentifier = union(enum) {
         const seq = try decoder.sequence();
         defer decoder.index = seq.slice.end;
 
-        const algo = try decoder.expectEnum(Tag);
+        const algo = try decoder.any(Tag);
         switch (algo) {
             inline .rsa_pkcs_sha1,
             .rsa_pkcs_sha224,
@@ -489,13 +474,13 @@ pub const AlgorithmIdentifier = union(enum) {
                 const hash = std.meta.stringToEnum(Hash, @tagName(t)["rsa_pkcs_".len..]).?;
                 return .{ .rsa_pkcs = hash };
             },
-            .rsa_pss => return .{ .rsa_pss = try decoder.expect(RsaPss) },
+            .rsa_pss => return .{ .rsa_pss = try decoder.any(RsaPss) },
             inline .ecdsa_sha224,
             .ecdsa_sha256,
             .ecdsa_sha384,
             .ecdsa_sha512,
             => |t| {
-                const curve = try decoder.expectEnum(Ecdsa.NamedCurve);
+                const curve = try decoder.any(Ecdsa.NamedCurve);
                 return .{ .ecdsa = Ecdsa{
                     .hash = std.meta.stringToEnum(Hash, @tagName(t)["ecdsa_".len..]).?,
                     .curve = curve,
@@ -552,22 +537,22 @@ pub const AlgorithmIdentifier = union(enum) {
             .ed25519 = "1.3.101.112",
         });
     };
-};
 
-pub const Hash = enum {
-    sha1,
-    sha256,
-    sha384,
-    sha512,
-    sha224,
+    const Hash = enum {
+        sha1,
+        sha256,
+        sha384,
+        sha512,
+        sha224,
 
-    pub const oids = asn1.Oid.StaticMap(@This()).initComptime(.{
-        .sha1 = "1.3.14.3.2.26",
-        .sha256 = "2.16.840.1.101.3.4.2.1",
-        .sha384 = "2.16.840.1.101.3.4.2.2",
-        .sha512 = "2.16.840.1.101.3.4.2.3",
-        .sha224 = "2.16.840.1.101.3.4.2.4",
-    });
+        pub const oids = asn1.Oid.StaticMap(@This()).initComptime(.{
+            .sha1 = "1.3.14.3.2.26",
+            .sha256 = "2.16.840.1.101.3.4.2.1",
+            .sha384 = "2.16.840.1.101.3.4.2.2",
+            .sha512 = "2.16.840.1.101.3.4.2.3",
+            .sha224 = "2.16.840.1.101.3.4.2.4",
+        });
+    };
 };
 
 const std = @import("std");

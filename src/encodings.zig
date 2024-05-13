@@ -262,6 +262,10 @@ pub const FieldTag = struct {
 
         return null;
     }
+
+    pub fn toTag(self: FieldTag) Tag {
+        return Tag.init(@enumFromInt(self.number), self.constructed orelse self.explicit, self.class);
+    }
 };
 
 const FirstTag = packed struct(u8) {

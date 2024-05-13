@@ -71,9 +71,10 @@ pub fn Opaque(comptime tag: encodings.Tag) type {
     };
 }
 
-pub fn Slice(comptime tag: encodings.Tag, comptime T: type, arr_len: comptime_int) type {
+pub fn List(comptime tag: encodings.Tag, comptime T: type, arr_len: comptime_int) type {
     return struct {
         items: [arr_len]T = undefined,
+        /// How many items are in use.
         len: usize = 0,
 
         pub fn decodeDer(decoder: *der.Decoder) !@This() {
@@ -83,7 +84,7 @@ pub fn Slice(comptime tag: encodings.Tag, comptime T: type, arr_len: comptime_in
             var res = @This(){};
             while (decoder.index < ele.slice.end) : (res.len += 1) {
                 if (arr_len < res.len) return error.ArrayTooSmall;
-                res.items[res.len] = try decoder.expect(T);
+                res.items[res.len] = try decoder.any(T);
             }
             return res;
         }

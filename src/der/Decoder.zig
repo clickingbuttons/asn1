@@ -1,16 +1,16 @@
 //! A secure DER parser that:
+//! - Does NOT allocate.
 //! - Does NOT read memory outside `bytes`.
 //! - Does NOT return elements with slices outside `bytes`.
 //! - Errors on values that do NOT follow DER rules:
 //!     - Lengths that could be represented in a shorter form.
 //!     - Booleans that are not 0xff or 0x00.
-//! - Does NOT allocate.
 bytes: []const u8,
 index: Index = 0,
 /// The field tag of the most recently visited field.
 field_tag: ?FieldTag = null,
 
-pub fn expect(self: *Decoder, comptime T: type) !T {
+pub fn any(self: *Decoder, comptime T: type) !T {
     if (std.meta.hasFn(T, "decodeDer")) return try T.decodeDer(self);
 
     const tag = Tag.fromZig(T).toExpected();
@@ -24,14 +24,13 @@ pub fn expect(self: *Decoder, comptime T: type) !T {
 
                 if (self.field_tag) |ft| {
                     if (ft.explicit) {
-                        const expected = Tag.init(undefined, ft.constructed orelse true, undefined).toExpected();
-                        const seq = try self.element(expected);
+                        const seq = try self.element(ft.toTag().toExpected());
                         self.index = seq.slice.start;
                         self.field_tag = null;
                     }
                 }
 
-                @field(res, f.name) = self.expect(f.type) catch |err| brk: {
+                @field(res, f.name) = self.any(f.type) catch |err| brk: {
                     if (f.default_value) |d| {
                         break :brk @as(*const f.type, @alignCast(@ptrCast(d))).*;
                     }
@@ -72,14 +71,9 @@ pub fn expect(self: *Decoder, comptime T: type) !T {
             }
             return @enumFromInt(try int(e.tag_type, bytes));
         },
-        .Optional => |o| return self.expect(o.child) catch return null,
+        .Optional => |o| return self.any(o.child) catch return null,
         else => @compileError("cannot decode type " ++ @typeName(T)),
     }
-}
-
-pub fn expectEnum(self: *Decoder, comptime T: type) !T {
-    const oid = try self.expect(asn1.Oid);
-    return T.oids.oidToEnum(oid.encoded) orelse return error.UnknownOid;
 }
 
 pub fn view(self: Decoder, elem: Element) []const u8 {

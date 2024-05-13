@@ -10,7 +10,7 @@ pub const Encoder = @import("./der/Encoder.zig");
 
 pub fn decode(comptime T: type, encoded: []const u8) !T {
     var decoder = Decoder{ .bytes = encoded };
-    const res = try decoder.expect(T);
+    const res = try decoder.any(T);
     std.debug.assert(decoder.index == encoded.len);
     return res;
 }

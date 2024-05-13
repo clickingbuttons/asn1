@@ -71,7 +71,7 @@ fn @"struct"(self: *Encoder, val: anytype) !void {
                 if (ft.explicit) {
                     var fake_encoder = Encoder.init(std.io.null_writer.any());
                     try fake_encoder.tagLengthValue(Tag.fromZig(f.type), field_val);
-                    try self.tag(Tag.init(undefined, ft.constructed orelse true, undefined));
+                    try self.tag(ft.toTag());
                     try self.length(fake_encoder.underlying.bytes_written);
                     self.field_tag = null;
                 }

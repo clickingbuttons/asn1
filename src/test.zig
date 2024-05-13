@@ -14,7 +14,7 @@ const AllTypes = struct {
     e: asn1.Opaque(.{ .number = .octetstring }),
     f: ?u16,
     g: ?Nested,
-    h: asn1.Slice(.{ .number = .sequence, .constructed = true }, C, 2),
+    h: asn1.List(.{ .number = .sequence, .constructed = true }, C, 2),
 
     pub const asn1_tags = .{
         .a = FieldTag.explicit(0, .context_specific),
@@ -44,7 +44,7 @@ const AllTypes = struct {
         };
 
         pub fn decodeDer(decoder: *der.Decoder) !Nested {
-            const inner = try decoder.expect(Asn1T);
+            const inner = try decoder.any(Asn1T);
             return Nested{
                 .a = inner.a,
                 .b = inner.b,
@@ -91,24 +91,25 @@ test AllTypes {
     // try file.writeAll(stream.getWritten());
 }
 
-fn testCertificate(comptime path: []const u8)  !void {
+fn testCertificate(comptime path: []const u8) !void {
     const encoded = @embedFile(path);
     const cert = try asn1.der.decode(Certificate, encoded);
 
-    var buf: [4096]u8 = undefined;
+    var buf: [encoded.len]u8 = undefined;
     var stream = std.io.fixedBufferStream(&buf);
     try asn1.der.encode(cert, stream.writer());
 
-    // Debug files can be used with another DER parser.
+    // If the below test fails, use this to create debug files that can be
+    // viewed with another DER parser.
     // const dir = try std.fs.cwd().openDir("src", .{});
     // var file = try dir.createFile(path ++ ".debug", .{});
     // defer file.close();
     // try file.writeAll(stream.getWritten());
-
     try std.testing.expectEqualSlices(u8, encoded, stream.getWritten());
 }
 
 test Certificate {
     try testCertificate("./der/testdata/cert_rsa2048.der");
     try testCertificate("./der/testdata/cert_ecc256.der");
+    std.debug.print("{} {}\n", .{ @sizeOf(Certificate), @sizeOf(std.meta.FieldType(Certificate.ToBeSigned, .extensions)) });
 }
