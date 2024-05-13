@@ -13,7 +13,7 @@ pub const ToBeSigned = struct {
 
     issuer_uid: ?asn1.BitString = null,
     subject_uid: ?asn1.BitString = null,
-    extensions: Extensions = .{},
+    extensions: asn1.Slice(.{ .number = .sequence, .constructed = true }, Extension, max_extensions) = .{},
 
     pub const asn1_tags = .{
         .version = FieldTag.explicit(0, .context_specific),
@@ -21,6 +21,10 @@ pub const ToBeSigned = struct {
         .subject_uid = FieldTag.implicit(2, .context_specific),
         .extensions = FieldTag.explicit(3, .context_specific),
     };
+
+    /// Avoid dynamic allocations by setting a reasonable upper bound.
+    /// There are 15 specified in RFC 5280 and vendors may add their own.
+    const max_extensions = 16;
 
     pub const Version = enum(u8) {
         v1 = 0,
@@ -224,97 +228,20 @@ pub const ToBeSigned = struct {
             pub fn encodeDer(self: Algorithm, encoder: *der.Encoder) !void {
                 switch (self) {
                     .rsa => {
-                        try encoder.any(.{ Tag.oids.enumToOid(.rsa), .{null} });
+                        try encoder.any(.{ Tag.rsa, null });
                     },
                     .ecdsa => |curve| {
-                        try encoder.any(.{ Tag.oids.enumToOid(.ecdsa), .{NamedCurve.oids.enumToOid(curve)} });
+                        try encoder.any(.{ Tag.ecdsa, .{NamedCurve.oids.enumToOid(curve)} });
                     },
                     .ed25519 => {
-                        try encoder.any(.{ Tag.oids.enumToOid(.ed25519), .{null} });
+                        try encoder.any(.{ Tag.ed25519, null });
                     },
                 }
             }
         };
     };
 
-    // This is a container to avoid allocating []Extension.
-    // It contains only the extensions we care to parse and ignores the rest.
-    pub const Extensions = struct {
-        // subject_key_identifier: ?[]const u8 = null,
-        key_usage: ?KeyUsage = null,
-        basic_constraints: ?BasicConstraints = null,
-        /// See `policiesIter`.
-        policies: ?asn1.Opaque(Asn1Tag.init(.sequence, true, .universal)) = null,
-        key_usage_ext: ?KeyUsageExt = null,
-        /// See `subjectAliasesIter`.
-        subject_aliases: ?asn1.Opaque(Asn1Tag.init(.sequence, true, .universal)) = null,
-
-        pub fn decodeDer(decoder: *der.Decoder) !Extensions {
-            const seq = try decoder.sequence();
-
-            var res: Extensions = .{};
-            while (decoder.index < seq.slice.end) {
-                const ext = try decoder.expect(Extension);
-                const doc_bytes = ext.value.bytes;
-                var doc_decoder = der.Decoder{ .bytes = doc_bytes };
-                var parsed = false;
-                if (Extension.Tag.oids.oidToEnum(ext.tag.encoded)) |tag| {
-                    parsed = true;
-                    switch (tag) {
-                        .key_usage => {
-                            res.key_usage = try KeyUsage.decodeDer(&doc_decoder);
-                        },
-                        .key_usage_ext => {
-                            res.key_usage_ext = try KeyUsageExt.decodeDer(&doc_decoder);
-                        },
-                        .subject_alt_name => {
-                            const seq2 = try doc_decoder.sequence();
-                            res.subject_aliases = .{ .bytes = doc_decoder.view(seq2) };
-                        },
-                        .basic_constraints => {
-                            res.basic_constraints = try BasicConstraints.fromDer(doc_bytes);
-                        },
-                        // .subject_key_identifier => {
-                        //     const string = try doc_decoder.element(ExpectedTag.primitive(.octetstring));
-                        //     res.subject_key_identifier = doc_decoder.view(string);
-                        // },
-                        .certificate_policies => {
-                            const seq2 = try doc_decoder.sequence();
-                            res.policies = .{ .bytes = doc_decoder.view(seq2) };
-                        },
-                        else => {
-                            parsed = false;
-                        },
-                    }
-                }
-                if (!parsed and ext.critical) {
-                    var buffer: [256]u8 = undefined;
-                    var stream = std.io.fixedBufferStream(&buffer);
-                    ext.tag.toDot(stream.writer()) catch {};
-
-                    log.err("critical unknown extension {s}", .{stream.getWritten()});
-                    return error.UnimplementedCriticalExtension;
-                }
-            }
-            return res;
-        }
-
-        pub fn encodeDer(self: Extensions, encoder: *der.Encoder) !void {
-            var buffer: [1024]u8 = undefined;
-            var stream = std.io.fixedBufferStream(&buffer);
-            var encoder2 = der.Encoder.init(stream.writer().any());
-            try self.key_usage.?.encodeDer(&encoder2);
-            const bytes1 = stream.getWritten();
-            const ext1 = Extension{
-                .tag = Extension.Tag.oids.enumToOid(.key_usage),
-                .critical = true,
-                .value = .{ .bytes = bytes1 }
-            };
-
-            try encoder.any(.{ ext1 });
-        }
-
-        const Extension = struct {
+        pub const Extension = struct {
             tag: asn1.Oid,
             critical: bool = false,
             value: asn1.Opaque(.{ .number = .octetstring }),
@@ -322,13 +249,13 @@ pub const ToBeSigned = struct {
             // .{ "2.5.29.1", .authority_key_identifier }, // deprecated
             // .{ "2.5.29.25", .crl_distribution_points }, // deprecated
             const Tag = enum {
-                /// Fingerprint to identify public key (unused).
+                /// Fingerprint to identify public key.
                 subject_key_identifier,
                 /// Purpose of key (see `KeyUsage`).
                 key_usage,
                 /// Alternative names besides specified `subject`. Usually DNS entries.
                 subject_alt_name,
-                /// Alternative names besides specified `issuer` (unused).
+                /// Alternative names besides specified `issuer`.
                 /// S4.2.1.7 states: Issuer alternative names are not
                 /// processed as part of the certification path validation algorithm in
                 /// Section 6.
@@ -338,13 +265,13 @@ pub const ToBeSigned = struct {
                 /// Nationality of subject
                 subject_directory_attributes,
                 /// For CA certificates, indicates a name space within which all subject names in
-                /// subsequent certificates in a certification path MUST be located (unused).
+                /// subsequent certificates in a certification path MUST be located.
                 name_constraints,
-                /// Where to find Certificate Revocation List (unused).
+                /// Where to find Certificate Revocation List.
                 crl_distribution_points,
-                /// Policies that cert was issued under (domain verification, etc.) (unused).
+                /// Policies that cert was issued under (domain verification, etc.).
                 certificate_policies,
-                /// Map of issuing CA policy considered equivalent to subject policy (unused).
+                /// Map of issuing CA policy considered equivalent to subject policy.
                 policy_mappings,
                 /// For CA certificates, can be used to prohibit policy mapping or require
                 /// that each certificate in a path contain an acceptable policy
@@ -377,7 +304,95 @@ pub const ToBeSigned = struct {
             };
         };
 
-        /// How `pub_key` may be used.
+    // pub const Extension = union(enum) {
+    //     // subject_key_identifier: ?[]const u8 = null,
+    //     key_usage: KeyUsage,
+    //     basic_constraints: BasicConstraints,
+    //     /// See `policiesIter`.
+    //     policies: asn1.Opaque(Asn1Tag.init(.sequence, true, .universal)),
+    //     key_usage_ext: KeyUsageExt,
+    //     /// See `subjectAliasesIter`.
+    //     subject_aliases: asn1.Opaque(Asn1Tag.init(.sequence, true, .universal)),
+    //     empty,
+
+    //     pub fn decodeDer(decoder: *der.Decoder) !Extension {
+    //         const ext = try decoder.expect(Extension);
+    //         const doc_bytes = ext.value.bytes;
+    //         var doc_decoder = der.Decoder{ .bytes = doc_bytes };
+
+    //         if (Extension.Tag.oids.oidToEnum(ext.tag.encoded)) |tag| {
+    //             switch (tag) {
+    //                 .key_usage => {
+    //                     return .{ .key_usage = try KeyUsage.decodeDer(&doc_decoder) };
+    //                 },
+    //                 .key_usage_ext => {
+    //                     return .{ .key_usage_ext = try KeyUsageExt.decodeDer(&doc_decoder) };
+    //                 },
+    //                 .subject_alt_name => {
+    //                     const seq2 = try doc_decoder.sequence();
+    //                     return .{ .subject_aliases = .{ .bytes = doc_decoder.view(seq2) } };
+    //                 },
+    //                 .basic_constraints => {
+    //                     return .{ .basic_constraints = try doc_decoder.expect(BasicConstraints) };
+    //                 },
+    //                 // .subject_key_identifier => {
+    //                 //     const string = try doc_decoder.element(ExpectedTag.primitive(.octetstring));
+    //                 //     res.subject_key_identifier = doc_decoder.view(string);
+    //                 // },
+    //                 .certificate_policies => {
+    //                     const seq2 = try doc_decoder.sequence();
+    //                     return .{ .policies = .{ .bytes = doc_decoder.view(seq2) } };
+    //                 },
+    //                 else => {},
+    //             }
+    //         }
+    //         if (ext.critical) {
+    //             var buffer: [256]u8 = undefined;
+    //             var stream = std.io.fixedBufferStream(&buffer);
+    //             ext.tag.toDot(stream.writer()) catch {};
+
+    //             log.err("critical unknown extension {s}", .{stream.getWritten()});
+    //             return error.UnimplementedCriticalExtension;
+    //         }
+    //     }
+
+    // };
+
+    pub const Extensions = struct {
+        pub fn encodeDer(self: Extensions, encoder: *der.Encoder) !void {
+            _ = .{ self, encoder };
+            // const n_fields = @typeInfo(Extensions).Struct.fields.len;
+            // const exts: [n_fields]Extension = undefined;
+            // var n_exts: usize = 0;
+
+            // var buffer: [1024]u8 = undefined;
+            // var stream = std.io.fixedBufferStream(&buffer);
+            // var encoder2 = der.Encoder.init(stream.writer().any());
+
+            // if (self.key_usage) |key_usage| {
+            //     try key_usage.encodeDer(&encoder2);
+            //     exts[n_exts] = Extension{
+            //         .tag = Extension.Tag.oids.enumToOid(.key_usage),
+            //         .critical = true,
+            //         .value = .{ .bytes = stream.getWritten() }
+            //     };
+            //     n_exts += 1;
+            // }
+            // if (self.basic_constraints) |basic_constraints| {
+            //     try stream.reset();
+            //     try encoder2.any(basic_constraints);
+            //     exts[n_exts] = Extension{
+            //         .tag = Extension.Tag.oids.enumToOid(.basic_constraints),
+            //         .critical = true,
+            //         .value = .{ .bytes = stream.getWritten() }
+            //     };
+            //     n_exts += 1;
+            // }
+            // try encoder.any(exts[0..n_exts]);
+        }
+
+
+        /// How `subject_pub_key` may be used.
         pub const KeyUsage = packed struct {
             encipher_only: bool = false,
             crl_sign: bool = false,
@@ -411,7 +426,7 @@ pub const ToBeSigned = struct {
             }
         };
 
-        /// Further specifies how `pub_key` may be used.
+        /// Further specifies how `subject_pub_key` may be used.
         pub const KeyUsageExt = packed struct {
             server_auth: bool = false,
             client_auth: bool = false,
@@ -462,30 +477,15 @@ pub const ToBeSigned = struct {
             }
         };
 
-        pub const PathLen = u16;
         /// Extension specifying if certificate is a CA and maximum number
         /// of non self-issued intermediate certificates that may follow this
-        /// Certificate in a valid certification path.
+        /// certificate in a valid certification path.
         pub const BasicConstraints = struct {
             is_ca: bool = false,
             /// MUST NOT include unless `is_ca`.
             max_path_len: ?PathLen = null,
 
-            pub fn fromDer(bytes: []const u8) !BasicConstraints {
-                var res: BasicConstraints = .{};
-
-                var decoder = der.Decoder{ .bytes = bytes };
-                _ = try decoder.sequence();
-                if (!decoder.eof()) {
-                    res.is_ca = try decoder.expect(bool);
-                    if (!decoder.eof()) {
-                        res.max_path_len = try decoder.expect(PathLen);
-                        if (!res.is_ca) return error.NotCA;
-                    }
-                }
-
-                return res;
-            }
+            pub const PathLen = u16;
         };
     };
 };
@@ -575,20 +575,38 @@ pub const AlgorithmIdentifier = union(enum) {
 
     pub fn encodeDer(self: AlgorithmIdentifier, encoder: *der.Encoder) !void {
         switch (self) {
-            .rsa_pkcs => |info| try encoder.any(.{info}),
-            .rsa_pss => |info| try encoder.any(.{ Algorithm.oids.enumToOid(.rsa_pss), info }),
-            .ecdsa => |info| try encoder.any(.{info}),
-            .ed25519 => try encoder.any(.{Algorithm.oids.enumToOid(.ed25519)}),
+            .rsa_pkcs => |info| {
+                const algo: Algorithm = switch (info) {
+                    .sha1 => .rsa_pkcs_sha1,
+                    .sha256 => .rsa_pkcs_sha256,
+                    .sha384 => .rsa_pkcs_sha384,
+                    .sha512 => .rsa_pkcs_sha512,
+                    .sha224 => .rsa_pkcs_sha224,
+                };
+                try encoder.any(.{ algo, null });
+            },
+            .rsa_pss => |info| try encoder.any(.{ Algorithm.rsa_pss, info }),
+            .ecdsa => |info| {
+                const algo: Algorithm = switch (info.hash) {
+                    .sha256 => .ecdsa_sha256,
+                    .sha384 => .ecdsa_sha384,
+                    .sha512 => .ecdsa_sha512,
+                    .sha224 => .ecdsa_sha224,
+                    else => unreachable,
+                };
+                try encoder.any(.{algo, info});
+            },
+            .ed25519 => try encoder.any(.{Algorithm.ed25519}),
         }
     }
 
     const Algorithm = enum {
         rsa_pkcs_sha1,
-        rsa_pss,
         rsa_pkcs_sha256,
         rsa_pkcs_sha384,
         rsa_pkcs_sha512,
         rsa_pkcs_sha224,
+        rsa_pss,
         ecdsa_sha224,
         ecdsa_sha256,
         ecdsa_sha384,
@@ -597,11 +615,11 @@ pub const AlgorithmIdentifier = union(enum) {
 
         pub const oids = asn1.Oid.StaticMap(@This()).initComptime(.{
             .rsa_pkcs_sha1 = "1.2.840.113549.1.1.5",
-            .rsa_pss = "1.2.840.113549.1.1.10",
             .rsa_pkcs_sha256 = "1.2.840.113549.1.1.11",
             .rsa_pkcs_sha384 = "1.2.840.113549.1.1.12",
             .rsa_pkcs_sha512 = "1.2.840.113549.1.1.13",
             .rsa_pkcs_sha224 = "1.2.840.113549.1.1.14",
+            .rsa_pss = "1.2.840.113549.1.1.10",
             .ecdsa_sha224 = "1.2.840.10045.4.3.1",
             .ecdsa_sha256 = "1.2.840.10045.4.3.2",
             .ecdsa_sha384 = "1.2.840.10045.4.3.3",

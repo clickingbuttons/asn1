@@ -4,6 +4,7 @@
 //! - Errors on values that do NOT follow DER rules:
 //!     - Lengths that could be represented in a shorter form.
 //!     - Booleans that are not 0xff or 0x00.
+//! - Does NOT allocate.
 bytes: []const u8,
 index: Index = 0,
 /// The field tag of the most recently visited field.
@@ -72,6 +73,17 @@ pub fn expect(self: *Decoder, comptime T: type) !T {
             return @enumFromInt(try int(e.tag_type, bytes));
         },
         .Optional => |o| return self.expect(o.child) catch return null,
+        .Array => |a| {
+            var res: T = undefined;
+            const ele = try self.element(tag);
+            var i: usize = 0;
+            while (self.index < ele.slice.end) : (i += 1) {
+                if (a.len < i) return error.ArrayTooSmall;
+
+                res[i] = try self.expect(a.child);
+            }
+            return res;
+        },
         else => @compileError("cannot decode type " ++ @typeName(T)),
     }
 }
@@ -131,7 +143,8 @@ pub fn element(self: *Decoder, expected: ExpectedTag) !Element {
         e.class = ft.class;
     }
     if (!e.equal(res.tag)) {
-        std.debug.print("expected {} got {}\n", .{ e, res });
+        std.debug.print("expected {}\n", .{ e });
+        std.debug.print("got {}\n", .{ res });
         return error.UnexpectedElement;
     }
 

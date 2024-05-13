@@ -92,15 +92,16 @@ test AllTypes {
 test Certificate {
     const encoded = @embedFile("./der/testdata/cert_rsa2048.der");
     const cert = try asn1.der.decode(Certificate, encoded);
-    std.debug.print("cert {}\n", .{cert.tbs.extensions.key_usage.?});
+    std.debug.print("cert {any}\n", .{cert.tbs.extensions.slice()});
 
     var buf: [4096]u8 = undefined;
     var stream = std.io.fixedBufferStream(&buf);
     try asn1.der.encode(cert, stream.writer());
-    // try std.testing.expectEqualSlices(u8, encoded, stream.getWritten());
 
     const dir = try std.fs.cwd().openDir("src", .{});
     var file = try dir.createFile("./der/testdata/cert_rsa2048_mine.der", .{});
     defer file.close();
     try file.writeAll(stream.getWritten());
+
+    try std.testing.expectEqualSlices(u8, encoded, stream.getWritten());
 }

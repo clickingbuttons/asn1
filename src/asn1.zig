@@ -71,6 +71,37 @@ pub fn Opaque(comptime tag: encodings.Tag) type {
     };
 }
 
+pub fn Slice(comptime tag: encodings.Tag, comptime T: type, arr_len: comptime_int) type {
+    return struct {
+        items: [arr_len]T = undefined,
+        len: usize = 0,
+
+        pub fn decodeDer(decoder: *der.Decoder) !@This() {
+            const ele = try decoder.element(tag.toExpected());
+            decoder.index = ele.slice.start;
+
+            var res = @This(){};
+            while (decoder.index < ele.slice.end) : (res.len += 1) {
+                if (arr_len < res.len) return error.ArrayTooSmall;
+                res.items[res.len] = try decoder.expect(T);
+            }
+            return res;
+        }
+
+        pub fn encodeDer(self: @This(), encoder: *der.Encoder) !void {
+            try encoder.tag(tag);
+            var fake_encoder = der.Encoder.init(std.io.null_writer.any());
+            for (self.items[0..self.len]) |i| try fake_encoder.any(i);
+            try encoder.length(fake_encoder.underlying.bytes_written);
+            for (self.items[0..self.len]) |i| try encoder.any(i);
+        }
+
+        pub fn slice(self: @This()) []const T {
+            return self.items[0..self.len];
+        }
+    };
+}
+
 test {
     _ = der;
     _ = Oid;

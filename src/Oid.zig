@@ -142,7 +142,7 @@ test encodeComptime {
 
 pub fn StaticMap(comptime Enum: type) type {
     const enum_info = @typeInfo(Enum).Enum;
-    const EnumToOid = [enum_info.fields.len][]const u8;
+    const EnumToOid = std.EnumArray(Enum, []const u8);
     const ReturnType = struct {
         oid_to_enum: std.StaticStringMap(Enum),
         enum_to_oid: EnumToOid,
@@ -152,7 +152,7 @@ pub fn StaticMap(comptime Enum: type) type {
         }
 
         pub fn enumToOid(self: @This(), value: Enum) Oid {
-            const bytes = self.enum_to_oid[@intFromEnum(value)];
+            const bytes = self.enum_to_oid.get(value);
             return .{ .encoded = bytes };
         }
     };
@@ -165,7 +165,7 @@ pub fn StaticMap(comptime Enum: type) type {
                 @compileError(error_msg);
             }
 
-            comptime var enum_to_oid: EnumToOid = undefined;
+            comptime var enum_to_oid = EnumToOid.initUndefined();
 
             const KeyPair = struct { []const u8, Enum };
             comptime var static_key_pairs: [enum_info.fields.len]KeyPair = undefined;
@@ -177,8 +177,7 @@ pub fn StaticMap(comptime Enum: type) type {
                 const encoded = &encodeComptime(@field(key_pairs, f.name));
                 const tag: Enum = @enumFromInt(f.value);
                 static_key_pairs[i] = .{ encoded, tag };
-                std.debug.assert(f.value == i);
-                enum_to_oid[@as(usize, f.value)] = encoded;
+                enum_to_oid.set(tag, encoded);
             };
 
             const oid_to_enum = std.StaticStringMap(Enum).initComptime(static_key_pairs);
