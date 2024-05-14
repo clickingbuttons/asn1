@@ -13,7 +13,7 @@ pub const ToBeSigned = struct {
 
     issuer_uid: ?asn1.BitString = null,
     subject_uid: ?asn1.BitString = null,
-    extensions: asn1.List(sequence_tag, Extension, max_extensions),
+    extensions: ?Sequence = null,
 
     pub const asn1_tags = .{
         .version = FieldTag.explicit(0, .context_specific),
@@ -21,10 +21,6 @@ pub const ToBeSigned = struct {
         .subject_uid = FieldTag.implicit(2, .context_specific),
         .extensions = FieldTag.explicit(3, .context_specific),
     };
-
-    /// Avoid dynamic allocations by setting a reasonable upper bound.
-    /// There are 15 specified in RFC 5280 and vendors may add their own.
-    const max_extensions = 16;
 
     const Version = enum(u8) {
         v1 = 0,
@@ -132,12 +128,14 @@ pub const ToBeSigned = struct {
             pub fn encodeDer(self: DateTime, encoder: *der.Encoder) !void {
                 const date = self.date;
                 const time = self.time;
-
-                try encoder.tag(.{ .number = .utc_time });
-                try encoder.length("yymmddHHmmssZ".len);
                 const year: u16 = if (date.year > 2000) date.year - 2000 else date.year - 1900;
                 const args = .{ year, date.month.numeric(), date.day, time.hour, time.minute, time.second };
-                try encoder.writer().print("{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}Z", args);
+                var buffer: ["yymmddHHmmssZ".len]u8 = undefined;
+                _ = try std.fmt.bufPrint(&buffer, "{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}Z", args);
+                try encoder.buffer.prependSlice(&buffer);
+                try encoder.length(buffer.len);
+                try encoder.tag(.{ .number = .utc_time });
+
                 // try der.Encoder.tagLength(writer, .{ .number = .generalized_time }, "yyyymmddHHmmssZ".len);
                 // try writer.print("{d:0>4}{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}Z", .{ date.year, date.month.numeric(), date.day, time.hour, time.minute, time.second });
             }
@@ -241,7 +239,21 @@ pub const ToBeSigned = struct {
         };
     };
 
-    const Extension = union(enum) {
+    pub fn extensionsIter(self: ToBeSigned) asn1.Iterator(Extension) {
+        const bytes = if (self.extensions) |exts| exts.bytes else "";
+        return asn1.Iterator(Extension){ .decoder = der.Decoder{ .bytes = bytes } };
+    }
+
+    pub fn extension(self: ToBeSigned, tag: Extension.Tag) !?Extension {
+        var iter = self.extensionsIter();
+        while (try iter.next()) |ext| {
+            // int comparison safe because of `UnionTag`
+            if (@intFromEnum(ext) == @intFromEnum(tag)) return ext;
+        }
+        return null;
+    }
+
+    const Extension = union(UnionTag) {
         key_usage: Known(KeyUsage),
         certificate_policies: Known(Sequence),
         subject_alt_name: Known(Sequence),
@@ -293,14 +305,16 @@ pub const ToBeSigned = struct {
                 .basic_constraints = "2.5.29.19",
                 .key_usage_ext = "2.5.29.37",
             });
+        };
 
-            comptime {
-                for (std.meta.tags(Tag)) |t| {
-                    if (!@hasField(Extension, @tagName(t))) {
-                        @compileError("Add '" ++ @tagName(t) ++ "' to Extension");
-                    }
-                }
-            }
+        /// Type that forces keeping this union up-to-date with `Tag`.
+        const UnionTag = brk: {
+            var info = @typeInfo(Tag).Enum;
+            info.fields = info.fields ++ &[_]std.builtin.Type.EnumField{
+                .{ .name = "unknown", .value = info.fields.len },
+            };
+            info.decls = &.{};
+            break :brk @Type(.{ .Enum = info });
         };
 
         fn Known(comptime T: type) type {

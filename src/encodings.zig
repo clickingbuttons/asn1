@@ -151,16 +151,16 @@ pub const Tag = struct {
             std.math.maxInt(u5) + 1...std.math.maxInt(u7) => |n| {
                 tag1.number = 15;
                 const tag2 = NextTag{ .number = @intCast(n), .continues = false };
-                try writer.writeByte(@bitCast(tag1));
                 try writer.writeByte(@bitCast(tag2));
+                try writer.writeByte(@bitCast(tag1));
             },
             else => |n| {
                 tag1.number = 15;
                 const tag2 = NextTag{ .number = @intCast(n >> 7), .continues = true };
                 const tag3 = NextTag{ .number = @truncate(n), .continues = false };
-                try writer.writeByte(@bitCast(tag1));
-                try writer.writeByte(@bitCast(tag2));
                 try writer.writeByte(@bitCast(tag3));
+                try writer.writeByte(@bitCast(tag2));
+                try writer.writeByte(@bitCast(tag1));
             },
         }
     }

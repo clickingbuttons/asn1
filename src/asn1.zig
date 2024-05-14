@@ -35,10 +35,10 @@ pub const BitString = struct {
     }
 
     pub fn encodeDer(self: BitString, encoder: *der.Encoder) !void {
-        try encoder.tag(asn1_tag);
-        try encoder.length(self.bytes.len + 1);
-        try encoder.writer().writeByte(self.right_padding);
         try encoder.writer().writeAll(self.bytes);
+        try encoder.writer().writeByte(self.right_padding);
+        try encoder.length(self.bytes.len + 1);
+        try encoder.tag(asn1_tag);
     }
 
     /// Buffer must be most significant byte to least significant.
@@ -64,9 +64,7 @@ pub fn Opaque(comptime tag: encodings.Tag) type {
         }
 
         pub fn encodeDer(self: @This(), encoder: *der.Encoder) !void {
-            try encoder.tag(tag);
-            try encoder.length(self.bytes.len);
-            try encoder.writer().writeAll(self.bytes);
+            try encoder.tagBytes(tag, self.bytes);
         }
     };
 }
@@ -90,11 +88,10 @@ pub fn List(comptime tag: encodings.Tag, comptime T: type, arr_len: comptime_int
         }
 
         pub fn encodeDer(self: @This(), encoder: *der.Encoder) !void {
+            const start = encoder.buffer.data.len;
+            for (0..self.items.len) |i| try encoder.any(self.items[self.items.len - i - 1]);
+            try encoder.length(encoder.buffer.data.len - start);
             try encoder.tag(tag);
-            var fake_encoder = der.Encoder.init(std.io.null_writer.any());
-            for (self.items[0..self.len]) |i| try fake_encoder.any(i);
-            try encoder.length(fake_encoder.underlying.bytes_written);
-            for (self.items[0..self.len]) |i| try encoder.any(i);
         }
 
         pub fn slice(self: @This()) []const T {
@@ -113,11 +110,20 @@ pub const Any = struct {
     }
 
     pub fn encodeDer(self: @This(), encoder: *der.Encoder) !void {
-        try encoder.tag(self.tag);
-        try encoder.length(self.bytes.len);
-        try encoder.writer().writeAll(self.bytes);
+        try encoder.tagBytes(self.tag, self.bytes);
     }
 };
+
+pub fn Iterator(comptime T: type) type {
+    return struct {
+        decoder: der.Decoder,
+
+        pub fn next(self: *@This()) !?T {
+            if (self.decoder.index < self.decoder.bytes.len) return try self.decoder.any(T);
+            return null;
+        }
+    };
+}
 
 test {
     _ = der;

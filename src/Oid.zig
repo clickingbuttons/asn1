@@ -115,9 +115,7 @@ pub fn decodeDer(decoder: *der.Decoder) !Oid {
 }
 
 pub fn encodeDer(self: Oid, encoder: *der.Encoder) !void {
-    try encoder.tag(asn1_tag);
-    try encoder.length(self.encoded.len);
-    try encoder.writer().writeAll(self.encoded);
+    try encoder.tagBytes(asn1_tag, self.encoded);
 }
 
 fn encodedLen(dot_notation: []const u8) usize {

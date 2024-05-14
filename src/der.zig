@@ -15,9 +15,12 @@ pub fn decode(comptime T: type, encoded: []const u8) !T {
     return res;
 }
 
-pub fn encode(value: anytype, writer: anytype) !void {
-    var encoder = Encoder.init(writer.any());
+/// Caller owns returned memory.
+pub fn encode(allocator: std.mem.Allocator, value: anytype) ![]u8 {
+    var encoder = Encoder.init(allocator);
+    defer encoder.deinit();
     try encoder.any(value);
+    return try encoder.buffer.toOwnedSlice();
 }
 
 test {
