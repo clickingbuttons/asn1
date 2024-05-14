@@ -1,6 +1,5 @@
 const std = @import("std");
 const asn1 = @import("./asn1.zig");
-const hexToBytes = @import("./encodings.zig").hexToBytes;
 const Certificate = @import("./Certificate.zig");
 
 const der = asn1.der;
@@ -11,11 +10,11 @@ const AllTypes = struct {
     a: u8 = 0,
     b: asn1.BitString,
     c: C,
-    d: asn1.Opaque(.{ .number = .string_utf8 }),
-    e: asn1.Opaque(.{ .number = .octetstring }),
+    d: asn1.Opaque(Tag.universal(.string_utf8, false)),
+    e: asn1.Opaque(Tag.universal(.octetstring, false)),
     f: ?u16,
     g: ?Nested,
-    h: asn1.List(.{ .number = .sequence, .constructed = true }, C, 2),
+    h: asn1.List(Tag.universal(.sequence, true), C, 2),
     i: asn1.Any,
 
     pub const asn1_tags = .{
@@ -81,16 +80,26 @@ test AllTypes {
     // try file.writeAll(buf);
 }
 
+/// Strictly for testing.
+fn hexToBytes(comptime hex: []const u8) [hex.len / 2]u8 {
+    var res: [hex.len / 2]u8 = undefined;
+    _ = std.fmt.hexToBytes(&res, hex) catch unreachable;
+    return res;
+}
+
 fn testCertificate(comptime path: []const u8) !void {
     const encoded = @embedFile(path);
     const cert = try asn1.der.decode(Certificate, encoded);
+
+    const key_usage = try cert.tbs.extension(.key_usage);
+    try std.testing.expectEqual(true, key_usage.?.key_usage.critical);
 
     const allocator = std.testing.allocator;
     const actual = try asn1.der.encode(allocator, cert);
     defer allocator.free(actual);
 
-    // If the below test fails, use this to create debug files that can be
-    // viewed with another DER parser.
+    // If the below test fails, you can use this to create a
+    // debug file that can be viewed with another DER parser.
     // const dir = try std.fs.cwd().openDir("src", .{});
     // var file = try dir.createFile(path ++ ".debug", .{});
     // defer file.close();
@@ -100,5 +109,6 @@ fn testCertificate(comptime path: []const u8) !void {
 
 test Certificate {
     try testCertificate("./der/testdata/cert_rsa2048.der");
-    // try testCertificate("./der/testdata/cert_ecc256.der");
+    try testCertificate("./der/testdata/cert_ecc256.der");
+    try testCertificate("./der/testdata/cert_ed25519.der");
 }

@@ -13,7 +13,7 @@ pub const BitString = struct {
         return self.bytes.len * 8 - self.right_padding;
     }
 
-    const asn1_tag = encodings.Tag{ .number = .bitstring };
+    const asn1_tag = encodings.Tag.universal(.bitstring, false);
 
     pub fn decodeDer(decoder: *der.Decoder) !BitString {
         const ele = try decoder.element(asn1_tag.toExpected());
@@ -114,9 +114,9 @@ pub const Any = struct {
     }
 };
 
-pub fn Iterator(comptime T: type) type {
+pub fn Iterator(comptime T: type, comptime Decoder: type) type {
     return struct {
-        decoder: der.Decoder,
+        decoder: Decoder,
 
         pub fn next(self: *@This()) !?T {
             if (self.decoder.index < self.decoder.bytes.len) return try self.decoder.any(T);

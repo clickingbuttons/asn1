@@ -58,11 +58,15 @@ pub const Index = u32;
 pub const Tag = struct {
     number: Number,
     /// Whether this ASN.1 type contains other ASN.1 types.
-    constructed: bool = false,
-    class: Class = .universal,
+    constructed: bool,
+    class: Class,
 
     pub fn init(number: Tag.Number, constructed: bool, class: Tag.Class) Tag {
         return .{ .number = number, .constructed = constructed, .class = class };
+    }
+
+    pub fn universal(number: Tag.Number, constructed: bool) Tag {
+        return .{ .number = number, .constructed = constructed, .class = .universal };
     }
 
     pub const Class = enum(u2) {
@@ -182,17 +186,16 @@ pub const Tag = struct {
         }
 
         switch (@typeInfo(T)) {
-            .Struct => return .{ .number = .sequence, .constructed = true },
-            .Union => return .{ .number = .sequence_of, .constructed = true },
-            .Bool => return .{ .number = .boolean },
-            .Int => return .{ .number = .integer },
+            .Struct, .Union => return universal(.sequence, true),
+            .Bool => return universal(.boolean, false),
+            .Int => return universal(.integer, false),
             .Enum => |e| {
                 if (@hasDecl(T, "oids")) return Oid.asn1_tag;
-                return .{ .number = if (e.is_exhaustive) .enumerated else .integer };
+                return universal(if (e.is_exhaustive) .enumerated else .integer, false);
             },
             .Optional => |o| return fromZig(o.child),
-            .Null => return .{ .number = .null },
-            else => @compileError("cannot encode Zig type " ++ @typeName(T)),
+            .Null => return universal(.null, false),
+            else => @compileError("cannot map Zig type to asn1_tag " ++ @typeName(T)),
         }
     }
 };
@@ -243,7 +246,6 @@ pub const ExpectedTag = struct {
 
 pub const FieldTag = struct {
     number: std.meta.Tag(Tag.Number),
-    constructed: ?bool = null,
     class: Tag.Class,
     explicit: bool = true,
 
@@ -264,7 +266,7 @@ pub const FieldTag = struct {
     }
 
     pub fn toTag(self: FieldTag) Tag {
-        return Tag.init(@enumFromInt(self.number), self.constructed orelse self.explicit, self.class);
+        return Tag.init(@enumFromInt(self.number), self.explicit, self.class);
     }
 };
 
@@ -281,20 +283,13 @@ const NextTag = packed struct(u8) {
 test Element {
     const short_form = [_]u8{ 0x30, 0x03, 0x02, 0x01, 0x09 };
     try std.testing.expectEqual(Element{
-        .tag = Tag{ .number = .sequence, .constructed = true },
+        .tag = Tag.universal(.sequence, true),
         .slice = Element.Slice{ .start = 2, .end = short_form.len },
     }, Element.decode(&short_form, 0));
 
     const long_form = [_]u8{ 0x30, 129, 129 } ++ [_]u8{0} ** 129;
     try std.testing.expectEqual(Element{
-        .tag = Tag{ .number = .sequence, .constructed = true },
+        .tag = Tag.universal(.sequence, true),
         .slice = Element.Slice{ .start = 3, .end = long_form.len },
     }, Element.decode(&long_form, 0));
-}
-
-/// Strictly for testing.
-pub fn hexToBytes(comptime hex: []const u8) [hex.len / 2]u8 {
-    var res: [hex.len / 2]u8 = undefined;
-    _ = std.fmt.hexToBytes(&res, hex) catch unreachable;
-    return res;
 }

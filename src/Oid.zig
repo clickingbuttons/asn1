@@ -186,11 +186,17 @@ pub fn StaticMap(comptime Enum: type) type {
     };
 }
 
+/// Strictly for testing.
+fn hexToBytes(comptime hex: []const u8) [hex.len / 2]u8 {
+    var res: [hex.len / 2]u8 = undefined;
+    _ = std.fmt.hexToBytes(&res, hex) catch unreachable;
+    return res;
+}
+
 const std = @import("std");
 const Oid = @This();
 const Arc = u32;
 const encoding_base = 128;
 const Allocator = std.mem.Allocator;
 const encodings = @import("./encodings.zig");
-const hexToBytes = encodings.hexToBytes;
 const der = @import("./der.zig");

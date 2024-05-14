@@ -23,7 +23,7 @@ pub fn any(self: *Encoder, val: anytype) !void {
 pub fn anyTag(self: *Encoder, tag_: encodings.Tag, val: anytype) !void {
     const T = @TypeOf(val);
     if (std.meta.hasFn(T, "encodeDer")) return try val.encodeDer(self);
-    const start  = self.buffer.data.len;
+    const start = self.buffer.data.len;
     const merged_tag = self.mergedTag(tag_);
 
     switch (@typeInfo(T)) {
@@ -43,7 +43,9 @@ pub fn anyTag(self: *Encoder, tag_: encodings.Tag, val: anytype) !void {
                 if (!is_default) {
                     const start2 = self.buffer.data.len;
                     self.field_tag = field_tag;
-                    try self.anyTag(Tag.fromZig(f.type), field_val); // will merge with self.field_tag. may mutate self.field_tag.
+                    // will merge with self.field_tag.
+                    // may mutate self.field_tag.
+                    try self.anyTag(Tag.fromZig(f.type), field_val);
                     if (field_tag) |ft| {
                         if (ft.explicit) {
                             try self.length(self.buffer.data.len - start2);
@@ -88,7 +90,6 @@ fn mergedTag(self: *Encoder, tag_: encodings.Tag) encodings.Tag {
     if (self.field_tag) |ft| {
         if (!ft.explicit) {
             res.number = @enumFromInt(ft.number);
-            if (ft.constructed) |v| res.constructed = v;
             res.class = ft.class;
         }
     }
@@ -111,6 +112,7 @@ pub fn length(self: *Encoder, len: usize) !void {
     return error.InvalidLength;
 }
 
+/// Warning: This writer writes backwards. `fn print` will NOT work as expected.
 pub fn writer(self: *Encoder) ArrayListReverse.Writer {
     return self.buffer.writer();
 }
@@ -140,11 +142,11 @@ test int {
     defer encoder.deinit();
 
     try encoder.int(u8, 0);
-    try std.testing.expectEqualSlices(u8, &[_]u8{  0 }, encoder.buffer.data);
+    try std.testing.expectEqualSlices(u8, &[_]u8{0}, encoder.buffer.data);
 
     encoder.buffer.clearAndFree();
     try encoder.int(u16, 0x00ff);
-    try std.testing.expectEqualSlices(u8, &[_]u8{ 0xff }, encoder.buffer.data);
+    try std.testing.expectEqualSlices(u8, &[_]u8{0xff}, encoder.buffer.data);
 
     encoder.buffer.clearAndFree();
     try encoder.int(u32, 0xffff);

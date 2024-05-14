@@ -47,6 +47,7 @@ pub fn prependSlice(self: *ArrayListReverse, data: []const u8) Error!void {
 }
 
 pub const Writer = std.io.Writer(*ArrayListReverse, Error, prependSliceSize);
+/// Warning: This writer writes backwards. `fn print` will NOT work as expected.
 pub fn writer(self: *ArrayListReverse) Writer {
     return .{ .context = self };
 }

@@ -32,10 +32,10 @@ pub const ToBeSigned = struct {
     const OctectString = asn1.Opaque(Asn1Tag.init(.octetstring, false, .universal));
     const sequence_tag = Asn1Tag.init(.sequence, true, .universal);
     const Sequence = asn1.Opaque(sequence_tag);
-    const SerialNumber = asn1.Opaque(.{ .number = .integer });
+    const SerialNumber = asn1.Opaque(Asn1Tag.universal(.integer, false));
     const KeyIdentifier = OctectString;
 
-    const Name = asn1.Opaque(.{ .number = .sequence, .constructed = true });
+    const Name = asn1.Opaque(Asn1Tag.universal(.sequence, true));
 
     const Validity = struct {
         not_before: DateTime,
@@ -44,6 +44,7 @@ pub const ToBeSigned = struct {
         const DateTime = struct {
             date: Date,
             time: Time,
+            format: enum { generalized, utc } = .utc,
 
             fn init(
                 year: Date.Year,
@@ -106,7 +107,7 @@ pub const ToBeSigned = struct {
                         date.month = @enumFromInt(try parseDigits(bytes[2..4], 1, 12));
                         date.day = try parseDigits(bytes[4..6], 1, 31);
 
-                        return .{ .date = date, .time = try parseTime(bytes[6..12]) };
+                        return .{ .date = date, .time = try parseTime(bytes[6..12]), .format = .generalized };
                     },
                     .generalized_time => {
                         if (bytes.len != "yyyymmddHHmmssZ".len)
@@ -119,7 +120,7 @@ pub const ToBeSigned = struct {
                         date.month = @enumFromInt(try parseDigits(bytes[4..6], 1, 12));
                         date.day = try parseDigits(bytes[6..8], 1, 31);
 
-                        return .{ .date = date, .time = try parseTime(bytes[8..14]) };
+                        return .{ .date = date, .time = try parseTime(bytes[8..14]), .format = .utc };
                     },
                     else => return error.InvalidDateTime,
                 }
@@ -130,14 +131,20 @@ pub const ToBeSigned = struct {
                 const time = self.time;
                 const year: u16 = if (date.year > 2000) date.year - 2000 else date.year - 1900;
                 const args = .{ year, date.month.numeric(), date.day, time.hour, time.minute, time.second };
-                var buffer: ["yymmddHHmmssZ".len]u8 = undefined;
-                _ = try std.fmt.bufPrint(&buffer, "{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}Z", args);
-                try encoder.buffer.prependSlice(&buffer);
-                try encoder.length(buffer.len);
-                try encoder.tag(.{ .number = .utc_time });
+                var buffer: ["yyyymmddHHmmssZ".len]u8 = undefined;
 
-                // try der.Encoder.tagLength(writer, .{ .number = .generalized_time }, "yyyymmddHHmmssZ".len);
-                // try writer.print("{d:0>4}{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}Z", .{ date.year, date.month.numeric(), date.day, time.hour, time.minute, time.second });
+                switch (self.format) {
+                    .generalized => {
+                        const fmt = "{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}Z";
+                        const bytes = try std.fmt.bufPrint(&buffer, fmt, args);
+                        try encoder.tagBytes(Asn1Tag.universal(.utc_time, false), bytes);
+                    },
+                    .utc => {
+                        const fmt = "{d:0>4}{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}Z";
+                        const bytes = try std.fmt.bufPrint(&buffer, fmt, args);
+                        try encoder.tagBytes(Asn1Tag.universal(.generalized_time, false), bytes);
+                    },
+                }
             }
 
             fn parseTime(bytes: *const [6]u8) !Time {
@@ -222,10 +229,7 @@ pub const ToBeSigned = struct {
                         const curve = try decoder.any(NamedCurve);
                         return .{ .ecdsa = curve };
                     },
-                    .ed25519 => {
-                        _ = try decoder.element(ExpectedTag.primitive(.null));
-                        return .ed25519;
-                    },
+                    .ed25519 => return .ed25519,
                 }
             }
 
@@ -233,15 +237,15 @@ pub const ToBeSigned = struct {
                 switch (self) {
                     .rsa => try encoder.any(.{ Tag.rsa, null }),
                     .ecdsa => |curve| try encoder.any(.{ Tag.ecdsa, curve }),
-                    .ed25519 => try encoder.any(.{ Tag.ed25519, null }),
+                    .ed25519 => try encoder.any(.{Tag.ed25519}),
                 }
             }
         };
     };
 
-    pub fn extensionsIter(self: ToBeSigned) asn1.Iterator(Extension) {
+    pub fn extensionsIter(self: ToBeSigned) asn1.Iterator(Extension, der.Decoder) {
         const bytes = if (self.extensions) |exts| exts.bytes else "";
-        return asn1.Iterator(Extension){ .decoder = der.Decoder{ .bytes = bytes } };
+        return asn1.Iterator(Extension, der.Decoder){ .decoder = der.Decoder{ .bytes = bytes } };
     }
 
     pub fn extension(self: ToBeSigned, tag: Extension.Tag) !?Extension {
@@ -262,7 +266,6 @@ pub const ToBeSigned = struct {
         unknown: Unknown,
 
         pub fn decodeDer(decoder: *der.Decoder) !Extension {
-            const start = decoder.index;
             const ext = try decoder.any(Unknown);
 
             if (Tag.oids.oidToEnum(ext.tag.encoded)) |tag| {
@@ -273,10 +276,10 @@ pub const ToBeSigned = struct {
                             @tagName(t),
                         ).?;
                         const T = std.meta.TagPayload(Extension, this_tag);
-                        // Reparse, this time expecting the known type.
-                        decoder.index = start;
-                        const value = try decoder.any(T);
-                        return @unionInit(Extension, @tagName(t), value);
+                        var decoder2 = der.Decoder{ .bytes = ext.value.bytes };
+                        const value = try decoder2.any(std.meta.FieldType(T, .value));
+                        const known = T{ .tag = t, .critical = ext.critical, .value = value };
+                        return @unionInit(Extension, @tagName(t), known);
                     },
                 }
             }
@@ -323,23 +326,19 @@ pub const ToBeSigned = struct {
                 critical: bool = false,
                 value: T,
 
-                // This isn't really the ASN1 tag.
-                // It's a nice way to wrap `value` in an octect string while using
-                // the existing encoder length counter.
-                pub const asn1_tags = .{
-                    .value = FieldTag{
-                        .number = @intFromEnum(Asn1Tag.Number.octetstring),
-                        .constructed = false,
-                        .class = .universal,
-                    },
-                };
+                pub fn encodeDer(self: @This(), encoder: *der.Encoder) !void {
+                    const start = encoder.buffer.data.len;
+                    try encoder.any(self);
+                    try encoder.length(encoder.buffer.data.len - start);
+                    try encoder.tag(Tag.init(.octetstring, false, .universal));
+                }
             };
         }
 
         const Unknown = struct {
             tag: asn1.Oid,
             critical: bool = false,
-            value: asn1.Any,
+            value: OctectString,
 
             fn expectNotCritical(self: Unknown) !void {
                 if (self.critical) {

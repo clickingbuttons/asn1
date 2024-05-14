@@ -123,14 +123,9 @@ pub fn element(self: *Decoder, expected: ExpectedTag) !Element {
     var e = expected;
     if (self.field_tag) |ft| {
         e.number = @enumFromInt(ft.number);
-        if (ft.constructed) |v| e.constructed = v;
         e.class = ft.class;
     }
-    if (!e.equal(res.tag)) {
-        // std.debug.print("expected {}\n", .{e});
-        // std.debug.print("got {}\n", .{res});
-        return error.UnexpectedElement;
-    }
+    if (!e.equal(res.tag)) return error.UnexpectedElement;
 
     self.index = if (res.tag.constructed) res.slice.start else res.slice.end;
     return res;
