@@ -3,8 +3,8 @@ const asn1 = @import("./asn1.zig");
 const Certificate = @import("./Certificate.zig");
 
 const der = asn1.der;
-const Tag = asn1.encodings.Tag;
-const FieldTag = asn1.encodings.FieldTag;
+const Tag = asn1.Tag;
+const FieldTag = asn1.FieldTag;
 
 const AllTypes = struct {
     a: u8 = 0,

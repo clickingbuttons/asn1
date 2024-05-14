@@ -1,6 +1,6 @@
 //! A buffered DER encoder. Encodes Zig types.
 //!
-//! Will prefer callling container's `fn encodeDer(self: @This(), encoder: *der.Encoder)`.
+//! Will prefer calling container's `fn encodeDer(self: @This(), encoder: *der.Encoder)`.
 //! That function should encode values, lengths, and tags in that order.
 buffer: ArrayListReverse,
 /// The field tag set by a parent container.
@@ -17,10 +17,10 @@ pub fn deinit(self: *Encoder) void {
 
 pub fn any(self: *Encoder, val: anytype) !void {
     const T = @TypeOf(val);
-    try self.anyTag(encodings.Tag.fromZig(T), val);
+    try self.anyTag(Tag.fromZig(T), val);
 }
 
-pub fn anyTag(self: *Encoder, tag_: encodings.Tag, val: anytype) !void {
+fn anyTag(self: *Encoder, tag_: Tag, val: anytype) !void {
     const T = @TypeOf(val);
     if (std.meta.hasFn(T, "encodeDer")) return try val.encodeDer(self);
     const start = self.buffer.data.len;
@@ -74,18 +74,18 @@ pub fn anyTag(self: *Encoder, tag_: encodings.Tag, val: anytype) !void {
     try self.tag(merged_tag);
 }
 
-pub fn tag(self: *Encoder, tag_: encodings.Tag) !void {
+pub fn tag(self: *Encoder, tag_: Tag) !void {
     const t = self.mergedTag(tag_);
     try t.encode(self.writer());
 }
 
-pub fn tagBytes(self: *Encoder, tag_: encodings.Tag, bytes: []const u8) !void {
+pub fn tagBytes(self: *Encoder, tag_: Tag, bytes: []const u8) !void {
     try self.buffer.prependSlice(bytes);
     try self.length(bytes.len);
     try self.tag(tag_);
 }
 
-fn mergedTag(self: *Encoder, tag_: encodings.Tag) encodings.Tag {
+fn mergedTag(self: *Encoder, tag_: Tag) Tag {
     var res = tag_;
     if (self.field_tag) |ft| {
         if (!ft.explicit) {
@@ -156,8 +156,7 @@ test int {
 const std = @import("std");
 const Oid = @import("../Oid.zig");
 const asn1 = @import("../asn1.zig");
-const encodings = @import("../encodings.zig");
 const ArrayListReverse = @import("./ArrayListReverse.zig");
-const Tag = encodings.Tag;
-const FieldTag = encodings.FieldTag;
+const Tag = asn1.Tag;
+const FieldTag = asn1.FieldTag;
 const Encoder = @This();

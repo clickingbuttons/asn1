@@ -1,10 +1,12 @@
 //! A secure DER parser that:
-//! - Does NOT allocate.
+//! - Does NOT allocate. If you wish to parse lists, either:
+//!   1. Use a fixed-length `asn1.List` OR
+//!   2. Use an `asn1.Iterator`
 //! - Does NOT read memory outside `bytes`.
 //! - Does NOT return elements with slices outside `bytes`.
 //! - Errors on values that do NOT follow DER rules:
-//!     - Lengths that could be represented in a shorter form.
-//!     - Booleans that are not 0xff or 0x00.
+//!   - Lengths that could be represented in a shorter form.
+//!   - Booleans that are not 0xff or 0x00.
 bytes: []const u8,
 index: Index = 0,
 /// The field tag of the most recently visited field.
@@ -80,10 +82,6 @@ pub fn view(self: Decoder, elem: Element) []const u8 {
     return elem.slice.view(self.bytes);
 }
 
-pub fn eof(self: *Decoder) bool {
-    return self.index == self.bytes.len;
-}
-
 fn int(comptime T: type, value: []const u8) !T {
     if (@typeInfo(T).Int.bits % 8 != 0) @compileError("T must be byte aligned");
 
@@ -152,13 +150,12 @@ const std = @import("std");
 const builtin = @import("builtin");
 const asn1 = @import("../asn1.zig");
 const Oid = @import("../Oid.zig");
-const encodings = @import("../encodings.zig");
 
 const expectEqual = std.testing.expectEqual;
 const expectError = std.testing.expectError;
 const Decoder = @This();
-const Index = encodings.Index;
-const Tag = encodings.Tag;
-const FieldTag = encodings.FieldTag;
-const ExpectedTag = encodings.ExpectedTag;
-const Element = encodings.Element;
+const Index = asn1.Index;
+const Tag = asn1.Tag;
+const FieldTag = asn1.FieldTag;
+const ExpectedTag = asn1.ExpectedTag;
+const Element = asn1.Element;
