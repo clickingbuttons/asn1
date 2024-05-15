@@ -3,58 +3,6 @@ const std = @import("std");
 pub const der = @import("./der.zig");
 pub const Oid = @import("./Oid.zig");
 
-pub const Element = struct {
-    tag: Tag,
-    slice: Slice,
-
-    pub const Slice = struct {
-        start: Index,
-        end: Index,
-
-        pub fn len(self: Slice) Index {
-            return self.end - self.start;
-        }
-
-        pub fn view(self: Slice, bytes: []const u8) []const u8 {
-            return bytes[self.start..self.end];
-        }
-    };
-
-    pub const InitError = error{ InvalidLength, EndOfStream };
-
-    /// Safely decode a DER/BER/CER element at `index`:
-    /// - Ensures length uses shortest form
-    /// - Ensures length is within `bytes`
-    /// - Ensures length is less than `std.math.maxInt(Index)`
-    pub fn decode(bytes: []const u8, index: Index) InitError!Element {
-        var stream = std.io.fixedBufferStream(bytes[index..]);
-        var reader = stream.reader();
-
-        const tag = try Tag.decode(reader);
-        const size_or_len_size = try reader.readByte();
-
-        var start = index + 2;
-        var end = start + size_or_len_size;
-        // short form between 0-127
-        if (size_or_len_size < 128) {
-            if (end > bytes.len) return error.InvalidLength;
-        } else {
-            // long form between 0 and std.math.maxInt(u1024)
-            const len_size: u7 = @truncate(size_or_len_size);
-            start += len_size;
-            if (len_size > @sizeOf(Index)) return error.InvalidLength;
-
-            const len = try reader.readVarInt(Index, .big, len_size);
-            if (len < 128) return error.InvalidLength; // should have used short form
-
-            end = std.math.add(Index, start, len) catch return error.InvalidLength;
-            if (end > bytes.len) return error.InvalidLength;
-        }
-
-        return Element{ .tag = tag, .slice = Slice{ .start = start, .end = end } };
-    }
-};
-
 pub const Index = u32;
 
 pub const Tag = struct {
@@ -63,22 +11,7 @@ pub const Tag = struct {
     constructed: bool,
     class: Class,
 
-    pub fn init(number: Tag.Number, constructed: bool, class: Tag.Class) Tag {
-        return .{ .number = number, .constructed = constructed, .class = class };
-    }
-
-    pub fn universal(number: Tag.Number, constructed: bool) Tag {
-        return .{ .number = number, .constructed = constructed, .class = .universal };
-    }
-
-    pub const Class = enum(u2) {
-        universal,
-        application,
-        context_specific,
-        private,
-    };
-
-    // For class == .universal.
+    /// These values apply to class == .universal.
     pub const Number = enum(u16) {
         // 0 is reserved by spec
         boolean = 1,
@@ -121,6 +54,21 @@ pub const Tag = struct {
         _,
     };
 
+    pub const Class = enum(u2) {
+        universal,
+        application,
+        context_specific,
+        private,
+    };
+
+    pub fn init(number: Tag.Number, constructed: bool, class: Tag.Class) Tag {
+        return .{ .number = number, .constructed = constructed, .class = class };
+    }
+
+    pub fn universal(number: Tag.Number, constructed: bool) Tag {
+        return .{ .number = number, .constructed = constructed, .class = .universal };
+    }
+
     pub fn decode(reader: anytype) !Tag {
         const tag1: FirstTag = @bitCast(try reader.readByte());
         var number: u14 = tag1.number;
@@ -149,27 +97,36 @@ pub const Tag = struct {
             .class = self.class,
         };
 
+        var buffer: [3]u8 = undefined;
+        var stream = std.io.fixedBufferStream(&buffer);
+        var writer2 = stream.writer();
+
         switch (@intFromEnum(self.number)) {
             0...std.math.maxInt(u5) => |n| {
                 tag1.number = @intCast(n);
-                try writer.writeByte(@bitCast(tag1));
+                writer2.writeByte(@bitCast(tag1)) catch unreachable;
             },
             std.math.maxInt(u5) + 1...std.math.maxInt(u7) => |n| {
                 tag1.number = 15;
                 const tag2 = NextTag{ .number = @intCast(n), .continues = false };
-                try writer.writeByte(@bitCast(tag2));
-                try writer.writeByte(@bitCast(tag1));
+                writer2.writeByte(@bitCast(tag1)) catch unreachable;
+                writer2.writeByte(@bitCast(tag2)) catch unreachable;
             },
             else => |n| {
                 tag1.number = 15;
                 const tag2 = NextTag{ .number = @intCast(n >> 7), .continues = true };
                 const tag3 = NextTag{ .number = @truncate(n), .continues = false };
-                try writer.writeByte(@bitCast(tag3));
-                try writer.writeByte(@bitCast(tag2));
-                try writer.writeByte(@bitCast(tag1));
+                writer2.writeByte(@bitCast(tag1)) catch unreachable;
+                writer2.writeByte(@bitCast(tag2)) catch unreachable;
+                writer2.writeByte(@bitCast(tag3)) catch unreachable;
             },
         }
+
+        _ = try writer.write(stream.getWritten());
     }
+
+    const FirstTag = packed struct(u8) { number: u5, constructed: bool, class: Tag.Class };
+    const NextTag = packed struct(u8) { number: u7, continues: bool };
 
     pub fn toExpected(self: Tag) ExpectedTag {
         return ExpectedTag{
@@ -209,6 +166,74 @@ test Tag {
     try std.testing.expectEqual(Tag.init(@enumFromInt(3), true, .context_specific), t);
 }
 
+/// A decoded view.
+pub const Element = struct {
+    tag: Tag,
+    slice: Slice,
+
+    pub const Slice = struct {
+        start: Index,
+        end: Index,
+
+        pub fn len(self: Slice) Index {
+            return self.end - self.start;
+        }
+
+        pub fn view(self: Slice, bytes: []const u8) []const u8 {
+            return bytes[self.start..self.end];
+        }
+    };
+
+    pub const DecodeError = error{ InvalidLength, EndOfStream };
+
+    /// Safely decode a DER/BER/CER element at `index`:
+    /// - Ensures length uses shortest form
+    /// - Ensures length is within `bytes`
+    /// - Ensures length is less than `std.math.maxInt(Index)`
+    pub fn decode(bytes: []const u8, index: Index) DecodeError!Element {
+        var stream = std.io.fixedBufferStream(bytes[index..]);
+        var reader = stream.reader();
+
+        const tag = try Tag.decode(reader);
+        const size_or_len_size = try reader.readByte();
+
+        var start = index + 2;
+        var end = start + size_or_len_size;
+        // short form between 0-127
+        if (size_or_len_size < 128) {
+            if (end > bytes.len) return error.InvalidLength;
+        } else {
+            // long form between 0 and std.math.maxInt(u1024)
+            const len_size: u7 = @truncate(size_or_len_size);
+            start += len_size;
+            if (len_size > @sizeOf(Index)) return error.InvalidLength;
+
+            const len = try reader.readVarInt(Index, .big, len_size);
+            if (len < 128) return error.InvalidLength; // should have used short form
+
+            end = std.math.add(Index, start, len) catch return error.InvalidLength;
+            if (end > bytes.len) return error.InvalidLength;
+        }
+
+        return Element{ .tag = tag, .slice = Slice{ .start = start, .end = end } };
+    }
+};
+
+test Element {
+    const short_form = [_]u8{ 0x30, 0x03, 0x02, 0x01, 0x09 };
+    try std.testing.expectEqual(Element{
+        .tag = Tag.universal(.sequence, true),
+        .slice = Element.Slice{ .start = 2, .end = short_form.len },
+    }, Element.decode(&short_form, 0));
+
+    const long_form = [_]u8{ 0x30, 129, 129 } ++ [_]u8{0} ** 129;
+    try std.testing.expectEqual(Element{
+        .tag = Tag.universal(.sequence, true),
+        .slice = Element.Slice{ .start = 3, .end = long_form.len },
+    }, Element.decode(&long_form, 0));
+}
+
+/// For decoding.
 pub const ExpectedTag = struct {
     number: ?Tag.Number = null,
     constructed: ?bool = null,
@@ -222,17 +247,7 @@ pub const ExpectedTag = struct {
         return .{ .number = number, .constructed = false, .class = .universal };
     }
 
-    fn fromType(comptime T: type) ExpectedTag {
-        if (std.meta.hasFn(T, "decodeDer")) @compileError("don't what decodeDer expects");
-
-        return switch (@typeInfo(T)) {
-            .Struct => .{ .number = .sequence, .constructed = true, .class = .universal },
-            .Bool => .{ .number = .boolean, .constructed = false, .class = .universal },
-            .Int => .{ .number = .integer, .constructed = false, .class = .universal },
-        };
-    }
-
-    pub fn equal(self: ExpectedTag, tag: Tag) bool {
+    pub fn match(self: ExpectedTag, tag: Tag) bool {
         if (self.number) |e| {
             if (tag.number != e) return false;
         }
@@ -271,30 +286,6 @@ pub const FieldTag = struct {
         return Tag.init(@enumFromInt(self.number), self.explicit, self.class);
     }
 };
-
-const FirstTag = packed struct(u8) {
-    number: u5,
-    constructed: bool,
-    class: Tag.Class,
-};
-const NextTag = packed struct(u8) {
-    number: u7,
-    continues: bool,
-};
-
-test Element {
-    const short_form = [_]u8{ 0x30, 0x03, 0x02, 0x01, 0x09 };
-    try std.testing.expectEqual(Element{
-        .tag = Tag.universal(.sequence, true),
-        .slice = Element.Slice{ .start = 2, .end = short_form.len },
-    }, Element.decode(&short_form, 0));
-
-    const long_form = [_]u8{ 0x30, 129, 129 } ++ [_]u8{0} ** 129;
-    try std.testing.expectEqual(Element{
-        .tag = Tag.universal(.sequence, true),
-        .slice = Element.Slice{ .start = 3, .end = long_form.len },
-    }, Element.decode(&long_form, 0));
-}
 
 pub const BitString = struct {
     /// Number of bits in rightmost byte that are unused.

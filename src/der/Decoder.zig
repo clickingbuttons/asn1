@@ -7,6 +7,7 @@
 //! - Errors on values that do NOT follow DER rules:
 //!   - Lengths that could be represented in a shorter form.
 //!   - Booleans that are not 0xff or 0x00.
+//! - Prefers calling `fn decodeDer(self: @This(), decoder: *der.Decoder)`.
 bytes: []const u8,
 index: Index = 0,
 /// The field tag of the most recently visited field.
@@ -19,6 +20,8 @@ pub fn any(self: *Decoder, comptime T: type) !T {
     switch (@typeInfo(T)) {
         .Struct => {
             const ele = try self.element(tag);
+            defer self.index = ele.slice.end; // don't force parsing all fields
+
             var res: T = undefined;
 
             inline for (std.meta.fields(T)) |f| {
@@ -46,7 +49,6 @@ pub fn any(self: *Decoder, comptime T: type) !T {
                 }
             }
 
-            std.debug.assert(self.index == ele.slice.end);
             return res;
         },
         .Bool => {
@@ -78,11 +80,32 @@ pub fn any(self: *Decoder, comptime T: type) !T {
     }
 }
 
+pub fn sequence(self: *Decoder) !Element {
+    return try self.element(ExpectedTag.init(.sequence, true, .universal));
+}
+
+pub fn element(self: *Decoder, expected: ExpectedTag) (error{ EndOfStream, UnexpectedElement } || Element.DecodeError)!Element {
+    if (self.index >= self.bytes.len) return error.EndOfStream;
+
+    const res = try Element.decode(self.bytes, self.index);
+    var e = expected;
+    if (self.field_tag) |ft| {
+        e.number = @enumFromInt(ft.number);
+        e.class = ft.class;
+    }
+    if (!e.match(res.tag)) {
+        return error.UnexpectedElement;
+    }
+
+    self.index = if (res.tag.constructed) res.slice.start else res.slice.end;
+    return res;
+}
+
 pub fn view(self: Decoder, elem: Element) []const u8 {
     return elem.slice.view(self.bytes);
 }
 
-fn int(comptime T: type, value: []const u8) !T {
+fn int(comptime T: type, value: []const u8) error{ NonCanonical, LargeValue }!T {
     if (@typeInfo(T).Int.bits % 8 != 0) @compileError("T must be byte aligned");
 
     var bytes = value;
@@ -108,25 +131,6 @@ test int {
     const big = [_]u8{ 0xef, 0xff };
     try expectError(error.LargeValue, int(u8, &big));
     try expectEqual(0xefff, int(u16, &big));
-}
-
-pub fn sequence(self: *Decoder) !Element {
-    return try self.element(ExpectedTag.init(.sequence, true, .universal));
-}
-
-pub fn element(self: *Decoder, expected: ExpectedTag) !Element {
-    if (self.index >= self.bytes.len) return error.EndOfStream;
-
-    const res = try Element.decode(self.bytes, self.index);
-    var e = expected;
-    if (self.field_tag) |ft| {
-        e.number = @enumFromInt(ft.number);
-        e.class = ft.class;
-    }
-    if (!e.equal(res.tag)) return error.UnexpectedElement;
-
-    self.index = if (res.tag.constructed) res.slice.start else res.slice.end;
-    return res;
 }
 
 test Decoder {

@@ -54,7 +54,7 @@ const AllTypes = struct {
 test AllTypes {
     const expected = AllTypes{
         .a = 2,
-        .b = asn1.BitString{ .bytes = &hexToBytes("04a0") },
+        .b = asn1.BitString{ .bytes = &[_]u8{ 0x04, 0xa0 } },
         .c = .a,
         .d = .{ .bytes = "asdf" },
         .e = .{ .bytes = "fdsa" },
@@ -78,13 +78,6 @@ test AllTypes {
     // var file = try dir.createFile(path, .{});
     // defer file.close();
     // try file.writeAll(buf);
-}
-
-/// Strictly for testing.
-fn hexToBytes(comptime hex: []const u8) [hex.len / 2]u8 {
-    var res: [hex.len / 2]u8 = undefined;
-    _ = std.fmt.hexToBytes(&res, hex) catch unreachable;
-    return res;
 }
 
 fn testCertificate(comptime path: []const u8) !void {

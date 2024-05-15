@@ -1,6 +1,5 @@
-//! An ArrayList that grows backwards.
-//! Counts nested prefix length fields in O(n) instead of O(n^depth)
-//! at the cost of extra buffering.
+//! An ArrayList that grows backwards. Counts nested prefix length fields
+//! in O(n) instead of O(n^depth) at the cost of extra buffering.
 //!
 //! Laid out in memory like:
 //! capacity  |--------------------------|
@@ -70,7 +69,7 @@ pub fn clearAndFree(self: *ArrayListReverse) void {
 
 /// The caller owns the returned memory.
 /// Capacity is cleared, making deinit() safe but unnecessary to call.
-pub fn toOwnedSlice(self: *ArrayListReverse) ![]u8 {
+pub fn toOwnedSlice(self: *ArrayListReverse) Error![]u8 {
     const new_memory = try self.allocator.alloc(u8, self.data.len);
     @memcpy(new_memory, self.data);
     @memset(self.data, undefined);

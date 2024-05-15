@@ -2,11 +2,10 @@
 //!
 //! Commonly used to identify standards, algorithms, certificate extensions,
 //! organizations, or policy documents.
-
-/// The ASN.1 defined bytes.
 encoded: []const u8,
 
 pub const InitError = std.fmt.ParseIntError || error{MissingPrefix} || std.io.FixedBufferStream(u8).WriteError;
+
 pub fn fromDot(dot_notation: []const u8, out: []u8) InitError!Oid {
     var split = std.mem.splitScalar(u8, dot_notation, '.');
     const first_str = split.next() orelse return error.MissingPrefix;
@@ -138,6 +137,9 @@ test encodeComptime {
     );
 }
 
+/// Maps of:
+/// - Oid -> enum
+/// - Enum -> oid
 pub fn StaticMap(comptime Enum: type) type {
     const enum_info = @typeInfo(Enum).Enum;
     const EnumToOid = std.EnumArray(Enum, []const u8);
@@ -170,7 +172,7 @@ pub fn StaticMap(comptime Enum: type) type {
 
             comptime for (enum_info.fields, 0..) |f, i| {
                 if (!@hasField(@TypeOf(key_pairs), f.name)) {
-                    @compileError("Field '" ++ f.name ++ "' missing StaticMap OID entry");
+                    @compileError("Field '" ++ f.name ++ "' missing Oid.StaticMap entry");
                 }
                 const encoded = &encodeComptime(@field(key_pairs, f.name));
                 const tag: Enum = @enumFromInt(f.value);
